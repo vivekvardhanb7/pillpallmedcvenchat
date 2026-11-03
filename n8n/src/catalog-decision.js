@@ -90,6 +90,15 @@ if (catalogError) {
 }
 
 const stateLanguage = String(state.language_code || '').split('-')[0];
+
+// Every OTC monograph limits how long a symptom may be self-treated before it
+// needs assessment. maximum_duration_days was already travelling all the way to
+// the product card without ever being enforced, so a week of fever could match a
+// 3-day antipyretic. Upper bound of each reported band is used, so the check is
+// conservative in the customer's favour.
+const DURATION_DAYS = { today: 1, '1_to_2_days': 2, '3_to_7_days': 7, more_than_7_days: 8 };
+const reportedDays = DURATION_DAYS[state.duration_code] ?? 0;
+
 const filteredRows = rows.filter(r =>
   (!r.pathway_code || r.pathway_code === state.pathway_code) &&
   (!r.country_code || r.country_code === state.country_code) &&
@@ -110,6 +119,7 @@ const evaluated = filteredRows
     const ageMonths = Number(state.age_years) * 12;
     if (product.minimum_age_months != null && ageMonths < Number(product.minimum_age_months)) reasons.push('below_minimum_age');
     if (product.maximum_age_years != null && Number(state.age_years) > Number(product.maximum_age_years)) reasons.push('above_maximum_age');
+    if (product.maximum_duration_days != null && reportedDays > Number(product.maximum_duration_days)) reasons.push('symptom_longer_than_product_allows');
     if (conflicts(state.allergy_terms, product.allergy_terms)) reasons.push('allergy_conflict');
     if (conflicts(state.condition_terms, product.contraindications)) reasons.push('contraindication_conflict');
     if (conflicts(state.medication_terms, product.interaction_rules)) reasons.push('medicine_interaction_conflict');
@@ -119,14 +129,27 @@ const evaluated = filteredRows
 
 const selected = evaluated.find(result => result.reasons.length === 0);
 if (!selected) {
-  const ageReasons = new Set(['below_minimum_age', 'above_maximum_age']);
-  const blockedByAgeOnly = evaluated.every(r => r.reasons.length > 0 && r.reasons.every(x => ageReasons.has(x)));
+  const detail = evaluated.map(v => ({ product_id: v.product.id, reasons: v.reasons }));
+  const blockedOnlyBy = (reasonSet) => evaluated.every(r => r.reasons.length > 0 && r.reasons.every(x => reasonSet.has(x)));
+  if (blockedOnlyBy(new Set(['below_minimum_age', 'above_maximum_age']))) {
+    return noProduct(
+      'The approved products for this symptom are suitable for a different age range than the age you entered. Please visit a nearby clinic, doctor or pharmacy for advice.',
+      ['age_outside_supported_range', 'all_products_blocked'],
+      detail,
+    );
+  }
+  if (blockedOnlyBy(new Set(['symptom_longer_than_product_allows']))) {
+    const longest = Math.min(...evaluated.map(r => Number(r.product.maximum_duration_days)).filter(Number.isFinite));
+    return noProduct(
+      `You have had this symptom longer than the ${Number.isFinite(longest) ? longest : 'approved'} days these products are approved for self-treatment. Taking them now could mask a condition that needs assessment. Please visit a nearby clinic, doctor or pharmacy for advice.`,
+      ['symptom_longer_than_product_allows', 'all_products_blocked'],
+      detail,
+    );
+  }
   return noProduct(
-    blockedByAgeOnly
-      ? 'The approved products for this symptom are suitable for a different age range than the age you entered. Please visit a nearby clinic, doctor or pharmacy for advice.'
-      : 'The available approved products did not pass all safety checks. Please visit a nearby clinic, doctor or pharmacy for advice.',
-    blockedByAgeOnly ? ['age_outside_supported_range', 'all_products_blocked'] : ['all_products_blocked'],
-    evaluated.map(v => ({ product_id: v.product.id, reasons: v.reasons })),
+    'The available approved products did not pass all safety checks. Please visit a nearby clinic, doctor or pharmacy for advice.',
+    ['all_products_blocked'],
+    detail,
   );
 }
 

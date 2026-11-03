@@ -9,6 +9,7 @@
  * PILLPAL_WEBHOOK_SECRET (sent as the x-pillpal-auth header).
  */
 
+import './load-env.mjs';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
@@ -113,17 +114,19 @@ const run = isLive ? liveRun : offlineRun;
 const scenarios = [
   { name: 'Adult, clean answers, ZZ fixture product', answers: CLEAN, expected: 'PRODUCT_ELIGIBLE', reason: 'approved_product_match', taps: 10, live: ['PRODUCT_ELIGIBLE', 'NO_SUITABLE_PRODUCT'] },
   { name: 'Adult, clean answers, Morocco (no approved MA product)', answers: CLEAN, country: 'MA', expected: 'NO_SUITABLE_PRODUCT', reason: 'no_approved_product_for_pathway', offlineRows: [], taps: 10 },
-  { name: 'Cold or cough pathway completes intake', answers: ['cold_cough', 30, 'today', 'mild', 'no', 'not_applicable', 'no', 'no', 'no', 'yes'], expected: 'NO_SUITABLE_PRODUCT', reason: 'no_approved_product_for_pathway', offlineRows: [], taps: 10 },
-  { name: 'Allergy pathway completes intake', answers: ['allergy', 30, '1_to_2_days', 'moderate', 'no', 'no', 'no', 'no', 'no', 'yes'], expected: 'NO_SUITABLE_PRODUCT', reason: 'no_approved_product_for_pathway', offlineRows: [], taps: 10 },
-  { name: 'Diarrhoea pathway completes intake', answers: ['diarrhoea', 30, 'today', 'mild', 'no', 'not_applicable', 'no', 'no', 'no', 'yes'], expected: 'NO_SUITABLE_PRODUCT', reason: 'no_approved_product_for_pathway', offlineRows: [], taps: 10 },
-  { name: 'Heartburn pathway completes intake', answers: ['heartburn', 30, 'today', 'mild', 'no', 'not_applicable', 'no', 'no', 'no', 'yes'], expected: 'NO_SUITABLE_PRODUCT', reason: 'no_approved_product_for_pathway', offlineRows: [], taps: 10 },
-  { name: 'Skin or minor wound pathway completes intake', answers: ['skin_minor_wound', 30, 'today', 'mild', 'no', 'not_applicable', 'no', 'no', 'no', 'yes'], expected: 'NO_SUITABLE_PRODUCT', reason: 'no_approved_product_for_pathway', offlineRows: [], taps: 10 },
+  { name: 'Cold or cough stops on the first tap', answers: ['cold_cough'], expected: 'NO_SUITABLE_PRODUCT', reason: 'pathway_not_serviced', taps: 1, summaryNotAsked: ['age', 'duration', 'severity', 'allergies'] },
+  { name: 'Allergy stops on the first tap', answers: ['allergy'], expected: 'NO_SUITABLE_PRODUCT', reason: 'pathway_not_serviced', taps: 1, summaryNotAsked: ['age', 'duration', 'severity', 'allergies'] },
+  { name: 'Diarrhoea stops on the first tap', answers: ['diarrhoea'], expected: 'NO_SUITABLE_PRODUCT', reason: 'pathway_not_serviced', taps: 1, summaryNotAsked: ['age', 'duration', 'severity', 'allergies'] },
+  { name: 'Heartburn stops on the first tap', answers: ['heartburn'], expected: 'NO_SUITABLE_PRODUCT', reason: 'pathway_not_serviced', taps: 1, summaryNotAsked: ['age', 'duration', 'severity', 'allergies'] },
+  { name: 'Skin or minor wound stops on the first tap', answers: ['skin_minor_wound'], expected: 'NO_SUITABLE_PRODUCT', reason: 'pathway_not_serviced', taps: 1, summaryNotAsked: ['age', 'duration', 'severity', 'allergies'] },
   { name: 'Symptom: other', answers: ['other'], expected: 'NO_SUITABLE_PRODUCT', reason: 'unsupported_pathway', taps: 1, summaryNotAsked: ['duration', 'severity', 'warning_signs', 'allergies'] },
   { name: 'Age 17 stops at the age question', answers: ['pain_fever', 17], expected: 'CLINIC_REFERRAL', reason: 'under_18', taps: 2, summaryNotAsked: ['duration', 'warning_signs', 'allergies'] },
   { name: 'Age 5 stops at the age question', answers: ['pain_fever', 5], expected: 'CLINIC_REFERRAL', reason: 'under_18', taps: 2 },
   { name: 'Age 18 is allowed to continue', answers: ['pain_fever', 18, 'today', 'mild', 'no', 'not_applicable', 'no', 'no', 'no', 'yes'], expected: 'PRODUCT_ELIGIBLE', taps: 10, live: ['PRODUCT_ELIGIBLE', 'NO_SUITABLE_PRODUCT'] },
   { name: 'Age 120 is allowed to continue', answers: ['pain_fever', 120, 'today', 'mild', 'no', 'not_applicable', 'no', 'no', 'no', 'yes'], expected: 'NO_SUITABLE_PRODUCT', reason: 'age_outside_supported_range', detailReason: 'above_maximum_age', offlineRows: [fixtureProduct], taps: 10, live: ['NO_SUITABLE_PRODUCT', 'PRODUCT_ELIGIBLE'] },
-  { name: 'Product minimum age above the customer', answers: CLEAN, expected: 'NO_SUITABLE_PRODUCT', reason: 'age_outside_supported_range', detailReason: 'below_minimum_age', offlineRows: [{ ...fixtureProduct, minimum_age_months: 1200 }], taps: 10 },
+  { name: 'Product minimum age above the customer', answers: CLEAN, expected: 'NO_SUITABLE_PRODUCT', reason: 'age_outside_supported_range', detailReason: 'below_minimum_age', offlineRows: [{ ...fixtureProduct, minimum_age_months: 1200 }], offlineOnly: 'the ZZ fixture minimum age is 18 years, so a 30-year-old cannot be below it', taps: 10 },
+  { name: 'Symptom outlasts the approved self-treatment window', answers: ['pain_fever', 30, '3_to_7_days', 'mild', 'no', 'not_applicable', 'no', 'no', 'no', 'yes'], expected: 'NO_SUITABLE_PRODUCT', reason: 'symptom_longer_than_product_allows', detailReason: 'symptom_longer_than_product_allows', offlineRows: [{ ...fixtureProduct, maximum_duration_days: 3 }], taps: 10, live: ['NO_SUITABLE_PRODUCT', 'PRODUCT_ELIGIBLE'] },
+  { name: 'Symptom inside the approved window still matches', answers: ['pain_fever', 30, '1_to_2_days', 'mild', 'no', 'not_applicable', 'no', 'no', 'no', 'yes'], expected: 'PRODUCT_ELIGIBLE', offlineRows: [{ ...fixtureProduct, maximum_duration_days: 3 }], taps: 10 },
   { name: 'Severe symptom', answers: ['pain_fever', 30, 'today', 'severe'], expected: 'CLINIC_REFERRAL', reason: 'severe_symptom', taps: 4, summaryNotAsked: ['warning_signs', 'pregnancy_or_breastfeeding'] },
   { name: 'Warning signs: yes', answers: ['pain_fever', 30, 'today', 'mild', 'yes'], expected: 'IMMEDIATE_MEDICAL_CARE', reason: 'warning_sign_reported', taps: 5 },
   { name: 'Warning signs: not sure', answers: ['pain_fever', 30, 'today', 'mild', 'not_sure'], expected: 'IMMEDIATE_MEDICAL_CARE', reason: 'warning_sign_uncertain', taps: 5, summaryWarning: 'Not sure' },
@@ -182,6 +185,12 @@ const extraChecks = [
     return out.outcome === 'CLINIC_REFERRAL' && out.reason_codes.includes('severe_symptom') && out.needs_catalog !== true
       ? null : `got ${out.outcome} ${JSON.stringify(out.reason_codes)}`;
   }, liveSkip: true },
+  { name: 'Forged state cannot assess an out-of-scope pathway', check: () => {
+    const forged = { version: 1, country_code: 'ZZ', language_code: 'en', step: 'confirm', pathway_code: 'diarrhoea', age_years: 30, duration_code: 'today', severity: 'mild', warning_signs: false, pregnancy_breastfeeding: 'no', allergy_status: 'no', medication_status: 'no', condition_status: 'no', confirmed: false, completed: false, turns: 9 };
+    const out = runIntakeCode({ first: () => ({ json: { body: { session_id: 'tamper_scope_001', country_code: 'ZZ', state: forged, answer: { question_id: 'confirm', value: 'yes' } } } }) })[0].json;
+    return out.outcome === 'NO_SUITABLE_PRODUCT' && out.reason_codes.includes('pathway_not_serviced') && out.needs_catalog !== true
+      ? null : `got ${out.outcome} ${JSON.stringify(out.reason_codes)}`;
+  }, liveSkip: true },
   { name: 'Every response reports turns and elapsed_ms', check: () => {
     const intake = body => runIntakeCode({ first: () => ({ json: { body } }) })[0].json;
     let turn = intake({ session_id: `timing_check_01`, country_code: 'ZZ', language_code: 'en', reset: true });
@@ -225,12 +234,18 @@ const extraChecks = [
 const pad = (text, width) => `${text}${' '.repeat(Math.max(0, width - String(text).length))}`;
 const failures = [];
 let index = 0;
+let skipped = 0;
 
 console.log(isLive ? `Live journeys against ${webhookUrl}${webhookSecret ? ' (with auth header)' : ' (NO SECRET - requests will be rejected)'}` : 'Offline journeys against n8n/src');
 console.log('');
 
 for (const scenario of scenarios) {
   index += 1;
+  if (isLive && scenario.offlineOnly) {
+    skipped += 1;
+    console.log(`${pad(index, 3)} ${pad('SKIP', 22)} ${scenario.name} -> needs a catalogue row this database does not have (${scenario.offlineOnly})`);
+    continue;
+  }
   let result;
   let trail;
   try {
@@ -280,5 +295,5 @@ if (failures.length) {
   for (const failure of failures) console.log(`- ${failure}`);
   process.exitCode = 1;
 } else {
-  console.log(`All ${index} customer journey checks passed.`);
+  console.log(`All ${index - skipped} customer journey checks passed${skipped ? ` (${skipped} skipped: they need catalogue rows this database does not have)` : ''}.`);
 }

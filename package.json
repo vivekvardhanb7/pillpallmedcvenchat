@@ -5,17 +5,19 @@
   "type": "module",
   "scripts": {
     "build:workflow": "node n8n/build-workflow.mjs",
+    "build:sidecar": "node n8n/build-understand-workflow.mjs",
     "check": "node scripts/check-workflow-drift.mjs",
-    "test": "node scripts/test-n8n-engine.mjs && node scripts/test-i18n.mjs && node scripts/test-voice-mapper.mjs && node scripts/check-workflow-drift.mjs",
+    "test": "node scripts/test-n8n-engine.mjs && node scripts/test-answer-understanding.mjs && node scripts/test-understand-sidecar.mjs && node scripts/test-i18n.mjs && node scripts/test-voice-mapper.mjs && node scripts/check-workflow-drift.mjs",
     "test:journeys": "node scripts/test-customer-journeys.mjs",
     "test:journeys:live": "node scripts/test-customer-journeys.mjs --live",
     "test:product-path": "node scripts/test-product-path-live.mjs",
     "smoke:live": "node scripts/smoke-live.mjs",
     "audit:catalog": "node scripts/audit-catalog.mjs",
-    "start": "node web/server.mjs"
+    "start": "node web/server.mjs",
+    "test:ai": "node scripts/test-understanding-live.mjs",
+    "test:ai:sidecar": "node scripts/test-sidecar-live.mjs"
   },
   "engines": {
     "node": ">=20"
   }
 }
-

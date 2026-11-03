@@ -10,13 +10,7 @@
  *   (or put PILLPAL_WEBHOOK_URL / PILLPAL_WEBHOOK_SECRET in .env)
  */
 
-import { join } from 'node:path';
-
-try {
-  process.loadEnvFile(join(process.cwd(), '.env'));
-} catch (_) {
-  // No .env is fine; environment variables or arguments are still honoured.
-}
+import './load-env.mjs';
 
 const url = process.argv[2]
   || process.env.PILLPAL_WEBHOOK_URL

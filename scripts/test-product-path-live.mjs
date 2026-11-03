@@ -8,6 +8,8 @@
  * authorizes dispensing; it only verifies the catalogue outcome and blocking.
  */
 
+import './load-env.mjs';
+
 const webhookUrl = process.argv[2]
   || process.env.PILLPAL_WEBHOOK_URL
   || 'http://localhost:5678/webhook/pillpal-chat-turn';

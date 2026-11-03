@@ -171,6 +171,24 @@ assert.ok(blockedReasons(overAgeBlock).includes('above_maximum_age'));
 const missingDoseBlock = runCatalog(catalogState(), [{ ...approvedProduct, dose_instructions: {} }]);
 assert.ok(blockedReasons(missingDoseBlock).includes('missing_approved_dose'));
 
+// maximum_duration_days is a clinical limit, not a label detail. A product
+// approved for three days of self-treatment must not be offered for a week of
+// fever, because the medicine would mask whatever is keeping the fever up.
+const withinDurationLimit = runCatalog(catalogState({ duration_code: 'today' }), [{ ...approvedProduct, maximum_duration_days: 3 }]);
+assert.equal(withinDurationLimit.outcome, 'PRODUCT_ELIGIBLE');
+
+const beyondDurationLimit = runCatalog(catalogState({ duration_code: '3_to_7_days' }), [{ ...approvedProduct, maximum_duration_days: 3 }]);
+assert.ok(blockedReasons(beyondDurationLimit).includes('symptom_longer_than_product_allows'));
+assert.equal(beyondDurationLimit.reason_codes[0], 'symptom_longer_than_product_allows', 'the specific reason must come first so the touchscreen shows it');
+assert.match(beyondDurationLimit.message, /3 days/);
+
+const durationPlusAllergy = runCatalog(
+  catalogState({ duration_code: '3_to_7_days', allergy_terms: ['test ingredient'] }),
+  [{ ...approvedProduct, maximum_duration_days: 3 }],
+);
+assert.equal(durationPlusAllergy.reason_codes[0], 'all_products_blocked', 'a mixed block must not claim the duration-only copy');
+assert.ok(blockedReasons(durationPlusAllergy).includes('allergy_conflict'));
+
 const secondaryProduct = {
   ...approvedProduct,
   id: '00000000-0000-0000-0000-000000000002',
@@ -209,12 +227,30 @@ assert.equal(urgent.outcome, 'IMMEDIATE_MEDICAL_CARE');
 assert.equal(urgent.needs_catalog, false);
 
 let child = intake({ reset: true, session_id: 'test_session_child' });
-child = answer(child, 'allergy');
+child = answer(child, 'pain_fever');
 child = answer(child, 12);
 assert.equal(child.outcome, 'CLINIC_REFERRAL');
 assert.ok(child.reason_codes.includes('under_18'));
 assert.equal(child.state.completed, true);
 assert.equal(child.screen.type, 'result');
+
+let scope = intake({ reset: true, session_id: 'test_session_scope' });
+scope = answer(scope, 'cold_cough');
+assert.equal(scope.outcome, 'NO_SUITABLE_PRODUCT', 'a category with no approved pathway must stop on the first tap');
+assert.ok(scope.reason_codes.includes('pathway_not_serviced'));
+assert.equal(scope.turns, 1);
+assert.equal(scope.needs_catalog, false);
+assert.equal(scope.state.pathway_code, 'cold_cough', 'the refused pathway is still recorded for the outcome log');
+assert.equal(scope.summary.allergies, 'Not asked');
+
+let flags = intake({ reset: true, session_id: 'test_session_flags' });
+flags = answer(flags, 'pain_fever');
+flags = answer(flags, 45);
+flags = answer(flags, 'today');
+flags = answer(flags, 'mild');
+assert.match(flags.screen.subtitle, /stiff neck/i, 'fever screening must name meningitis features, not a generic list');
+assert.match(flags.screen.subtitle, /does not fade when you press/i, 'non-blanching rash is the other tell a kiosk must not miss');
+assert.doesNotMatch(flags.screen.subtitle, /general list is not a complete/i);
 
 let toddler = intake({ reset: true, session_id: 'test_session_toddler' });
 toddler = answer(toddler, 'pain_fever');
@@ -222,6 +258,62 @@ toddler = answer(toddler, 5);
 assert.equal(toddler.outcome, 'CLINIC_REFERRAL');
 assert.ok(toddler.reason_codes.includes('under_18'));
 assert.equal(toddler.state.step, 'complete');
+
+const outcomeSource = await readFile(resolve('n8n/src/outcome-log-payload.js'), 'utf8');
+const runOutcomeCode = new Function('$input', outcomeSource);
+const outcomeRow = response => runOutcomeCode({ first: () => ({ json: response }) })[0].json;
+
+// kiosk_outcome_log has CHECK constraints (migration 007). A rejected insert is
+// invisible to the customer, so the row must be valid for every input shape.
+const AGE_BANDS = new Set(['unknown', 'under_18', '18_30', '31_45', '46_65', 'over_65']);
+function assertFitsSchema(row, label) {
+  assert.match(row.session_key, /^[A-Za-z0-9_-]{6,120}$/, `${label}: session_key "${row.session_key}"`);
+  assert.match(row.country_code, /^[A-Z]{2}$/, `${label}: country_code`);
+  assert.match(row.language_code, /^[a-z]{2}(-[A-Z]{2})?$/, `${label}: language_code`);
+  assert.ok(AGE_BANDS.has(row.age_band), `${label}: age_band ${row.age_band}`);
+  assert.ok(row.reasons.length <= 500, `${label}: reasons length ${row.reasons.length}`);
+  assert.ok(row.turns >= 0 && row.turns <= 40, `${label}: turns ${row.turns}`);
+  assert.ok(row.elapsed_ms >= 0 && row.elapsed_ms <= 86400000, `${label}: elapsed_ms ${row.elapsed_ms}`);
+  assert.ok(row.outcome && row.pathway_code && row.duration_code && row.severity, `${label}: empty column`);
+}
+
+const logged = outcomeRow({
+  session_id: 'session_abc123',
+  outcome: 'PRODUCT_ELIGIBLE',
+  reason_codes: ['approved_product_match'],
+  turns: 10,
+  elapsed_ms: 4200,
+  state: { country_code: 'ZZ', language_code: 'en', pathway_code: 'pain_fever', age_years: 30, duration_code: 'today', severity: 'mild' },
+});
+assert.equal(logged.age_band, '18_30');
+assert.equal(logged.reasons, 'approved_product_match');
+assertFitsSchema(logged, 'normal row');
+
+const hostile = outcomeRow({
+  session_id: '<script>drop table kiosk_outcome_log</script>',
+  outcome: 'SOMETHING_INVENTED',
+  reason_codes: Array.from({ length: 200 }, (_, i) => `reason_${i}_and_it_is_long_enough_to_overflow_the_column_check`),
+  turns: 9999,
+  elapsed_ms: -5,
+  state: { country_code: 'zz-ZZ hack', language_code: 'english', pathway_code: 'invented_pathway', age_years: 999, duration_code: 'never', severity: 'unheard' },
+});
+assertFitsSchema(hostile, 'hostile row');
+assert.equal(hostile.outcome, 'NO_SUITABLE_PRODUCT', 'an unknown outcome must not be logged as if it were a decision');
+assert.equal(hostile.age_band, 'unknown');
+assert.equal(hostile.language_code, 'en');
+assert.equal(hostile.country_code, 'MA');
+assert.equal(hostile.pathway_code, 'none');
+assert.equal(hostile.turns, 0);
+assert.equal(hostile.elapsed_ms, 0);
+
+const noState = outcomeRow({ session_id: 'session_zzz999', outcome: 'IMMEDIATE_MEDICAL_CARE' });
+assertFitsSchema(noState, 'row without state');
+assert.equal(noState.age_band, 'unknown');
+assert.equal(noState.reasons, '');
+
+for (const [age, band] of [[17, 'under_18'], [18, '18_30'], [30, '18_30'], [31, '31_45'], [46, '46_65'], [66, 'over_65']]) {
+  assert.equal(outcomeRow({ session_id: 'session_bandtest', outcome: 'CLINIC_REFERRAL', state: { age_years: age } }).age_band, band);
+}
 
 console.log('All deterministic n8n engine tests passed.');
 

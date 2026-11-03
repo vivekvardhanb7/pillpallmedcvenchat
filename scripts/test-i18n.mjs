@@ -123,6 +123,27 @@ const ageRange = localizeResult({ outcome: 'NO_SUITABLE_PRODUCT', reason_codes: 
 assert.match(ageRange.message, /Altersgruppe/);
 assert.match(localizeResult({ outcome: 'NO_SUITABLE_PRODUCT', reason_codes: ['age_outside_supported_range'] }, 'en').message, /different age range/);
 
+// Out-of-scope categories and a symptom that outlasts the approved self-care
+// window each need their own sentence: "no product matched" alone tells the
+// customer nothing about what to do next.
+assert.match(localizeResult({ outcome: 'NO_SUITABLE_PRODUCT', reason_codes: ['pathway_not_serviced'] }, 'en').message, /pharmacist or doctor/);
+assert.match(localizeResult({ outcome: 'NO_SUITABLE_PRODUCT', reason_codes: ['pathway_not_serviced'] }, 'de').message, /Apothekerin oder ein Arzt/);
+assert.match(localizeResult({ outcome: 'NO_SUITABLE_PRODUCT', reason_codes: ['symptom_longer_than_product_allows', 'all_products_blocked'] }, 'en').message, /longer than these products are approved/);
+assert.match(localizeResult({ outcome: 'NO_SUITABLE_PRODUCT', reason_codes: ['symptom_longer_than_product_allows'] }, 'de').message, /länger, als für diese Produkte/);
+
+// The fever red flags must reach a German customer in German, not as the
+// generic list and not as English text on a German screen.
+const feverScreenDe = localizeScreen({ question_id: 'warning_signs', type: 'single_select', title: 'Do any serious warning signs apply?', pathway_code: 'pain_fever', subtitle: 'engine english fallback' }, 'de');
+assert.match(feverScreenDe.subtitle, /Nackensteifigkeit/);
+assert.match(feverScreenDe.subtitle, /Hautausschlag, der beim Drücken eines Glases nicht verblasst/);
+assert.doesNotMatch(feverScreenDe.subtitle, /engine english fallback/);
+const feverScreenEn = localizeScreen({ question_id: 'warning_signs', type: 'single_select', title: 'x', pathway_code: 'pain_fever', subtitle: 'fallback' }, 'en');
+assert.match(feverScreenEn.subtitle, /stiff neck/);
+assert.match(feverScreenEn.subtitle, /does not fade when you press a glass/);
+// An unknown pathway falls back to the generic list rather than rendering nothing.
+const genericScreen = localizeScreen({ question_id: 'warning_signs', type: 'single_select', title: 'x', pathway_code: 'cold_cough', subtitle: 'generic fallback' }, 'de');
+assert.match(genericScreen.subtitle, /Diese allgemeine Liste/);
+
 // English and German dictionaries must stay key-identical: a key that exists
 // only in English renders English text on the German screen without any error.
 const flattenKeys = (node, prefix = '') => Object.entries(node).flatMap(([key, value]) => {

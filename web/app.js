@@ -69,6 +69,23 @@ let notifiedConfigText = null;
 let pendingConfigNotice = false;
 const dismissedOperatorKinds = new Set();
 
+// The answer helper is an optional extra path into the same fixed answers. When
+// it is off, unreachable or unsure, the kiosk behaves exactly as before.
+// config.understandUrl can point at the hosted n8n sidecar instead of the kiosk's
+// own /api/understand bridge; both speak the same contract.
+const understandingUrl = config.understandUrl || '/api/understand';
+const understandingStatusUrl = config.understandStatusUrl || understandingUrl;
+// The hosted sidecar waits up to 12 s for the provider, so the kiosk must not
+// give up before that answer comes back.
+const understandingTimeoutMs = 15000;
+const understanding = { available: false, disabledUntil: 0 };
+
+function understandingHeaders() {
+  const headers = { 'Content-Type': 'application/json' };
+  if (config.webhookSecret) headers['X-PILLPAL-Auth'] = config.webhookSecret;
+  return headers;
+}
+
 const THEME_STORAGE_KEY = 'pillpal-theme';
 let storedTheme = readStoredTheme();
 
@@ -680,19 +697,104 @@ function handleMedicineMention(text, screen) {
   return true;
 }
 
-function handleNaturalLanguageAnswer(text, source) {
+function acceptAiAnswer(data, screen) {
+  if (!data?.matched) return null;
+  if (screen.type === 'number') {
+    const number = Number(data.value);
+    if (!Number.isInteger(number) || number < 0 || number > 120) return null;
+    return { value: number, label: String(number) };
+  }
+  if (screen.type === 'text') {
+    const text = cleanTranscriptText(data.value);
+    return text ? { value: text, label: text } : null;
+  }
+  const option = (screen.options || []).find(item => item.value === data.value);
+  return option ? { value: option.value, label: option.label } : null;
+}
+
+async function understandWithAi(text, screen) {
+  if (!understanding.available || Date.now() < understanding.disabledUntil) return null;
+  const controller = new AbortController();
+  const timer = globalThis.setTimeout(() => controller.abort(), understandingTimeoutMs);
+  try {
+    const response = await fetch(understandingUrl, {
+      method: 'POST',
+      headers: understandingHeaders(),
+      body: JSON.stringify({
+        transcript: text,
+        language: currentLanguage,
+        question_id: screen.question_id,
+        type: screen.type,
+        title: screen.title,
+        minimum: screen.minimum,
+        maximum: screen.maximum,
+        options: (screen.options || []).map(option => ({ value: option.value, label: option.label })),
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      understanding.disabledUntil = Date.now() + 60000;
+      return null;
+    }
+    return acceptAiAnswer(await response.json(), screen);
+  } catch (_) {
+    understanding.disabledUntil = Date.now() + 60000;
+    return null;
+  } finally {
+    globalThis.clearTimeout(timer);
+  }
+}
+
+// Only a provider that was configured but cannot be used is worth telling the
+// operator about; a kiosk that deliberately runs without one stays quiet.
+async function refreshUnderstandingStatus() {
+  try {
+    const response = await fetch(understandingStatusUrl, {
+      headers: understandingHeaders(),
+      cache: 'no-store',
+    });
+    if (!response.ok) {
+      understanding.available = false;
+      return;
+    }
+    const status = await response.json();
+    understanding.available = Boolean(status?.available);
+    if (status?.note) showOperatorBadge('ai', 'setup.aiNotUsable');
+  } catch (_) {
+    understanding.available = false;
+  }
+}
+
+async function handleNaturalLanguageAnswer(text, source) {
   markActivity();
   appendTranscript('user', text);
   maybeSwitchLanguage(text);
   if (!current?.screen || current.state?.completed || busy) return;
   const screen = localizeScreen(current.screen, currentLanguage);
   if (screen.question_id === 'symptom' && handleMedicineMention(text, screen)) return;
-  const answer = resolveVoiceAnswer(text, screen);
   const clarification = clarificationFor(text, screen);
   if (clarification) {
     appendTranscript('assistant', clarification, `clarification:${current.screen.question_id}:${text}`);
     voice.speak(clarification, { interrupt: true });
     return;
+  }
+  let answer = resolveVoiceAnswer(text, screen);
+  let interpreted = false;
+  // A free-text answer is stored word for word, so an Arabic or Darija allergy
+  // would never match the catalogue's Latin-script rule terms. The helper
+  // rewrites those words into terms - it never decides anything.
+  const needsNormalising = !answer || screen.type === 'text';
+  if (needsNormalising && understanding.available) {
+    setVoiceMode('thinking');
+    const aiAnswer = await understandWithAi(text, screen);
+    if (aiAnswer) {
+      answer = aiAnswer;
+      interpreted = true;
+    }
+    if (busy || current?.screen?.question_id !== screen.question_id) {
+      setVoiceMode('idle');
+      return;
+    }
   }
   if (!answer) {
     const guidance = screen.type === 'number'
@@ -702,7 +804,8 @@ function handleNaturalLanguageAnswer(text, source) {
     voice.speak(guidance, { interrupt: true });
     return;
   }
-  if (needsAnswerConfirmation(current.screen.question_id, answer, text)) {
+  // Anything the helper interpreted is read back, never applied silently.
+  if (interpreted || needsAnswerConfirmation(current.screen.question_id, answer, text)) {
     showAnswerConfirmation(answer, source);
     return;
   }
@@ -737,7 +840,7 @@ function clarificationFor(text, screen) {
 }
 
 function handleVoiceTranscript(text) {
-  handleNaturalLanguageAnswer(text, 'voice');
+  handleNaturalLanguageAnswer(text, 'voice').catch(() => setVoiceMode('idle'));
 }
 
 function handleTypedChat(event) {
@@ -745,7 +848,7 @@ function handleTypedChat(event) {
   const text = chatInput.value.trim();
   if (!text || chatInput.disabled) return;
   chatInput.value = '';
-  handleNaturalLanguageAnswer(text, 'chat');
+  handleNaturalLanguageAnswer(text, 'chat').catch(() => setVoiceMode('idle'));
 }
 
 function confirmPendingAnswer() {
@@ -961,4 +1064,5 @@ startActivityWatchdog();
 setVoiceMode('idle');
 startStartupSelfCheck();
 startConfigWatcher().catch(() => {});
+refreshUnderstandingStatus().catch(() => { understanding.available = false; });
 

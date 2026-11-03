@@ -21,7 +21,7 @@ async function fetchAll(table, select) {
     const response = await fetch(`${baseUrl}/rest/v1/${table}?select=${select}&limit=1000&offset=${offset}`, {
       headers: { apikey: serviceKey, authorization: `Bearer ${serviceKey}` },
     });
-    if (!response.ok) throw new Error(`Fetching ${table} failed: HTTP ${response.status}`);
+    if (!response.ok) throw new Error(`Fetching ${table} failed: HTTP ${response.status} ${(await response.text()).slice(0, 300)}`);
     const batch = await response.json();
     rows.push(...batch);
     if (batch.length < 1000) break;
@@ -101,7 +101,7 @@ for (const product of products) {
 const kioskLanguages = LANGUAGES.map(language => language.code.split('-')[0]);
 const visibleRows = await fetchAll(
   'recommendable_product_pathways',
-  'product_id,product_name,country_code,pathway_code,language_code',
+  'id,product_name,country_code,pathway_code,language_code',
 );
 const coverageByPathway = new Map();
 for (const row of visibleRows) {

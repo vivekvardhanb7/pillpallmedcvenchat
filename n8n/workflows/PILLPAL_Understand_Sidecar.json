@@ -1,0 +1,346 @@
+{
+  "name": "PILLPAL MedAssist - Spoken Answer Understanding (Gemini sidecar)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pillpal-understand",
+        "responseMode": "responseNode",
+        "authentication": "headerAuth",
+        "options": {}
+      },
+      "id": "06d1478d-f79f-492d-8976-ffb8deb4eea8",
+      "name": "Understand Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -780,
+        120
+      ],
+      "webhookId": "98ba5206-98c6-4dad-ab6c-a9f77eb0a642",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "sKKZe6liXy5SsWfl",
+          "name": "Backend Service Auth Medtest"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generated from web/answer-understanding.js by n8n/build-understand-workflow.mjs.\n// Edit the module, not this node.\n// Maps a spoken or typed transcript onto the fixed answer values of the screen the\n// kiosk is showing. Runs on the kiosk's own Node server, never inside the n8n\n// decision path: the workflow still receives ordinary option values, and this\n// module only ever returns a value the current screen already offers.\n\nconst UNDERSTAND_QUESTIONS = new Set([\n  'symptom',\n  'age',\n  'duration',\n  'severity',\n  'warning_signs',\n  'pregnancy_breastfeeding',\n  'allergy_status',\n  'allergy_terms',\n  'medication_status',\n  'medication_terms',\n  'condition_status',\n  'condition_terms',\n  'confirm',\n]);\n\nconst LIMITS = {\n  transcriptChars: 500,\n  titleChars: 200,\n  optionCount: 12,\n  optionValueChars: 40,\n  optionLabelChars: 120,\n  terms: 12,\n  termChars: 60,\n  answerChars: 300,\n};\n\nfunction positiveNumber(value) {\n  const number = Number(value);\n  return Number.isFinite(number) && number > 0 ? number : null;\n}\n\nfunction normalizeText(value, limit) {\n  return String(value ?? '')\n    .replace(/[\\u0000-\\u001f\\u007f]/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim()\n    .slice(0, limit);\n}\n\nfunction readProviderConfig(env = {}) {\n  const requested = String(env.PILLPAL_AI_PROVIDER || 'off').trim().toLowerCase();\n  const timeoutMs = positiveNumber(env.PILLPAL_AI_TIMEOUT_MS) || 10000;\n  const configuredConfidence = Number(env.PILLPAL_AI_MIN_CONFIDENCE);\n  const minConfidence = Number.isFinite(configuredConfidence)\n    ? Math.min(Math.max(configuredConfidence, 0), 1)\n    : 0.6;\n\n  if (requested === 'ollama') {\n    return {\n      provider: 'ollama',\n      usable: true,\n      timeoutMs,\n      minConfidence,\n      model: normalizeText(env.OLLAMA_MODEL || 'gemma3:1b', 80),\n      baseUrl: String(env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').trim().replace(/\\/+$/, ''),\n    };\n  }\n\n  if (requested === 'gemini') {\n    const apiKey = String(env.GEMINI_API_KEY || '').trim();\n    return {\n      provider: apiKey ? 'gemini' : 'off',\n      usable: Boolean(apiKey),\n      note: apiKey ? null : 'missing_api_key',\n      timeoutMs,\n      minConfidence,\n      model: normalizeText(env.GEMINI_MODEL || 'gemini-2.5-flash-lite', 80),\n      baseUrl: String(env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta')\n        .trim()\n        .replace(/\\/+$/, ''),\n      apiKey,\n    };\n  }\n\n  return {\n    provider: 'off',\n    usable: false,\n    note: requested === 'off' ? null : 'unknown_provider',\n    timeoutMs,\n    minConfidence,\n    model: null,\n    baseUrl: null,\n  };\n}\n\nfunction statusPayload(config) {\n  return {\n    available: Boolean(config.usable),\n    provider: config.provider,\n    model: config.provider === 'off' ? null : config.model,\n    min_confidence: config.minConfidence,\n    timeout_ms: config.timeoutMs,\n    note: config.note || null,\n  };\n}\n\nfunction sanitizeRequest(payload, config) {\n  const source = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};\n  const questionId = normalizeText(source.question_id, 40);\n  if (!UNDERSTAND_QUESTIONS.has(questionId)) return { ok: false, error: 'Unsupported question.' };\n\n  const transcript = normalizeText(source.transcript, LIMITS.transcriptChars);\n  if (transcript.length < 2) return { ok: false, error: 'A non-empty transcript is required.' };\n\n  const type = normalizeText(source.type, 30);\n  if (!['single_select', 'confirmation', 'number', 'text'].includes(type)) {\n    return { ok: false, error: 'Unsupported answer type.' };\n  }\n\n  const options = Array.isArray(source.options)\n    ? source.options\n      .slice(0, LIMITS.optionCount)\n      .map(option => ({\n        value: normalizeText(option?.value, LIMITS.optionValueChars),\n        label: normalizeText(option?.label, LIMITS.optionLabelChars),\n      }))\n      .filter(option => option.value)\n    : [];\n  if ((type === 'single_select' || type === 'confirmation') && !options.length) {\n    return { ok: false, error: 'The screen options are missing.' };\n  }\n\n  const minimum = Number.isFinite(Number(source.minimum)) ? Number(source.minimum) : 0;\n  const maximum = Number.isFinite(Number(source.maximum)) ? Number(source.maximum) : 120;\n\n  return {\n    ok: true,\n    context: {\n      questionId,\n      type,\n      options,\n      transcript,\n      language: normalizeText(source.language, 12) || 'en',\n      title: normalizeText(source.title, LIMITS.titleChars),\n      minimum: type === 'number' ? minimum : 0,\n      maximum: type === 'number' ? maximum : 120,\n      minConfidence: config.minConfidence,\n    },\n  };\n}\n\nconst SYSTEM_PROMPT = [\n  'You read an answer spoken out loud to a pharmacy self-service kiosk and map it to the fixed answer values of the question currently on screen.',\n  'Rules:',\n  '- Reply with a single JSON object and nothing else.',\n  '- \"value\" must be copied exactly from the allowed values for this question. Never invent a value and never invent a medicine.',\n  '- The customer may answer in any language, in dialect, or mixing languages. Map the meaning, not the literal words.',\n  '- If the answer is unclear, silent, off-topic, a question back to the kiosk, or fits more than one allowed value, reply {\"value\":\"unknown\",\"confidence\":0}.',\n  '- If the customer asks the kiosk for medical advice or for a medicine, reply {\"value\":\"unknown\",\"confidence\":0}.',\n  '- Never guess on their behalf. An honest \"unknown\" lets the kiosk ask the question again.',\n  '- \"confidence\" is a number between 0 and 1 for how sure you are that \"value\" is what this customer meant.',\n  'Examples:',\n  '- \"no none of that\" on a yes/no safety question -> {\"value\":\"no\",\"confidence\":0.97}',\n  '- \"wa bash n-3ref m3a kolchi, men nhar l-bareh\" (fever since yesterday) on a duration question -> {\"value\":\"1_to_2_days\",\"confidence\":0.8}',\n  '- \"ich habe heute Morgen angefangen\" on a duration question -> {\"value\":\"today\",\"confidence\":0.9}',\n  '- \"welche Tablette ist besser fuer mich?\" -> {\"value\":\"unknown\",\"confidence\":0}',\n].join('\\n');\n\nfunction describeAllowed(context) {\n  if (context.type === 'number') {\n    return `Allowed answer: a whole number between ${context.minimum} and ${context.maximum}. Put the number in \"value\" as digits, for example {\"value\":\"34\",\"confidence\":0.9}.`;\n  }\n  if (context.type === 'text') {\n    return [\n      'Allowed answer: the names the customer listed, separated by commas, written the way they are normally spelled.',\n      'Keep only the names of medicines, ingredients or health conditions. Do not add anything the customer did not say.',\n      'Example: \"sui tablet b paracetamol w ibuprofen\" -> {\"value\":\"paracetamol, ibuprofen\",\"confidence\":0.85}.',\n    ].join(' ');\n  }\n  const lines = context.options.map(option => `- \"${option.value}\" means \"${option.label || option.value}\"`);\n  return ['Allowed values (copy one exactly into \"value\"):'].concat(lines).join('\\n');\n}\n\nfunction buildMessages(context) {\n  const user = [\n    `Question on screen: ${context.title || context.questionId}`,\n    describeAllowed(context),\n    `The customer said this (language hint: ${context.language}):`,\n    `\"${context.transcript}\"`,\n    'Reply with the JSON object now.',\n  ].join('\\n\\n');\n  return { system: SYSTEM_PROMPT, user };\n}\n\nfunction buildCall(config, context) {\n  const messages = buildMessages(context);\n  if (config.provider === 'ollama') {\n    return {\n      provider: 'ollama',\n      url: `${config.baseUrl}/api/chat`,\n      headers: { 'Content-Type': 'application/json' },\n      body: {\n        model: config.model,\n        stream: false,\n        format: 'json',\n        options: { temperature: 0, top_p: 0, num_predict: 60, seed: 7 },\n        messages: [\n          { role: 'system', content: messages.system },\n          { role: 'user', content: messages.user },\n        ],\n      },\n    };\n  }\n  return {\n    provider: 'gemini',\n    url: `${config.baseUrl}/models/${encodeURIComponent(config.model)}:generateContent`,\n    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': config.apiKey },\n    body: {\n      systemInstruction: { parts: [{ text: messages.system }] },\n      contents: [{ role: 'user', parts: [{ text: messages.user }] }],\n      generationConfig: {\n        temperature: 0,\n        topP: 0,\n        maxOutputTokens: 64,\n        responseMimeType: 'application/json',\n      },\n    },\n  };\n}\n\nfunction extractModelText(provider, json) {\n  if (provider === 'ollama') return String(json?.message?.content ?? '');\n  const parts = json?.candidates?.[0]?.content?.parts;\n  if (!Array.isArray(parts)) return '';\n  return parts.map(part => (typeof part?.text === 'string' ? part.text : '')).join('');\n}\n\nfunction parseJsonObject(text) {\n  const cleaned = String(text ?? '')\n    .replace(/```/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n  const start = cleaned.indexOf('{');\n  const end = cleaned.lastIndexOf('}');\n  if (start < 0 || end <= start) return null;\n  try {\n    const parsed = JSON.parse(cleaned.slice(start, end + 1));\n    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;\n  } catch (_) {\n    return null;\n  }\n}\n\nfunction reject(reason, confidence = 0) {\n  return { matched: false, value: null, label: null, confidence, reason };\n}\n\nconst NEGATION_ONLY = /^(no|none|nothing|not any|nein|keine|nichts|la|walo|rien)(\\s+(at all|really|all of them|of them|medicines?|allerg(y|ies)|dinge))?$/i;\n\nfunction extractTerms(value) {\n  const seen = [];\n  for (const raw of String(value ?? '').split(/[,;\\n]/)) {\n    const term = normalizeText(raw.replace(/^(and|au|und|wa|u|et)\\s+/i, ''), LIMITS.termChars);\n    if (!term || NEGATION_ONLY.test(term)) continue;\n    if (!seen.some(existing => existing.toLowerCase() === term.toLowerCase())) seen.push(term);\n    if (seen.length >= LIMITS.terms) break;\n  }\n  return seen;\n}\n\nfunction validateModelAnswer(modelText, context) {\n  const parsed = parseJsonObject(modelText);\n  if (!parsed) return reject('unparseable');\n\n  const rawConfidence = Number(parsed.confidence);\n  const confidence = Number.isFinite(rawConfidence) ? Math.min(Math.max(rawConfidence, 0), 1) : 0;\n  if (confidence < context.minConfidence) return reject('low_confidence', confidence);\n\n  const answer = normalizeText(parsed.value, LIMITS.answerChars);\n  if (!answer || answer.toLowerCase() === 'unknown' || answer.toLowerCase() === 'none') {\n    return reject('not_answered', confidence);\n  }\n\n  if (context.type === 'number') {\n    const digits = answer.match(/\\d{1,3}/);\n    if (!digits) return reject('no_number', confidence);\n    const number = Number(digits[0]);\n    if (!Number.isInteger(number) || number < context.minimum || number > context.maximum) {\n      return reject('out_of_range', confidence);\n    }\n    return { matched: true, value: number, label: String(number), confidence, reason: null };\n  }\n\n  if (context.type === 'text') {\n    if (/[<>&]/.test(answer)) return reject('value_not_allowed', confidence);\n    const terms = extractTerms(answer);\n    if (!terms.length) return reject('no_terms', confidence);\n    const value = terms.join(', ').slice(0, LIMITS.answerChars);\n    return { matched: true, value, label: value, confidence, reason: null };\n  }\n\n  const wanted = answer.toLowerCase();\n  const option = context.options.find(candidate => candidate.value.toLowerCase() === wanted)\n    || context.options.find(candidate => (candidate.label || '').toLowerCase() === wanted)\n    || context.options.find(candidate => candidate.value.toLowerCase() === wanted.replace(/\\s+/g, '_'));\n\n  if (!option) return reject('value_not_allowed', confidence);\n  return { matched: true, value: option.value, label: option.label || option.value, confidence, reason: null };\n}\n\nconst config = { minConfidence: 0.6 };\nconst body = $json.body || $json;\nconst result = sanitizeRequest(body, config);\nif (!result.ok) return [{ json: { ok: false, error: result.error } }];\nconst messages = buildMessages(result.context);\nreturn [{ json: { ok: true, system: messages.system, user: messages.user, context: result.context } }];\n"
+      },
+      "id": "9778673a-f1f4-41be-9e62-859101ff07b2",
+      "name": "Sanitize Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -540,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "d9e671ff-73c6-4900-b8b9-9ad461030e79",
+              "leftValue": "={{ $json.ok === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "06f3a138-9ffa-44d9-a850-6db0061d4d4b",
+      "name": "Usable Request?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -300,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googlePalmApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ systemInstruction: { parts: [{ text: $json.system }] }, contents: [{ role: \"user\", parts: [{ text: $json.user }] }], generationConfig: { temperature: 0, topP: 0, maxOutputTokens: 64, responseMimeType: \"application/json\" } }) }}",
+        "options": {
+          "timeout": 12000
+        }
+      },
+      "id": "19255cd3-a7de-4249-8961-79bb1ce30ac3",
+      "name": "Ask Gemini",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -60,
+        20
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "retryOnFail": false,
+      "credentials": {
+        "googlePalmApi": {
+          "id": "uD7oERyQHg8sHOUI",
+          "name": "NAF google APi"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generated from web/answer-understanding.js by n8n/build-understand-workflow.mjs.\n// Edit the module, not this node.\n// Maps a spoken or typed transcript onto the fixed answer values of the screen the\n// kiosk is showing. Runs on the kiosk's own Node server, never inside the n8n\n// decision path: the workflow still receives ordinary option values, and this\n// module only ever returns a value the current screen already offers.\n\nconst UNDERSTAND_QUESTIONS = new Set([\n  'symptom',\n  'age',\n  'duration',\n  'severity',\n  'warning_signs',\n  'pregnancy_breastfeeding',\n  'allergy_status',\n  'allergy_terms',\n  'medication_status',\n  'medication_terms',\n  'condition_status',\n  'condition_terms',\n  'confirm',\n]);\n\nconst LIMITS = {\n  transcriptChars: 500,\n  titleChars: 200,\n  optionCount: 12,\n  optionValueChars: 40,\n  optionLabelChars: 120,\n  terms: 12,\n  termChars: 60,\n  answerChars: 300,\n};\n\nfunction positiveNumber(value) {\n  const number = Number(value);\n  return Number.isFinite(number) && number > 0 ? number : null;\n}\n\nfunction normalizeText(value, limit) {\n  return String(value ?? '')\n    .replace(/[\\u0000-\\u001f\\u007f]/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim()\n    .slice(0, limit);\n}\n\nfunction readProviderConfig(env = {}) {\n  const requested = String(env.PILLPAL_AI_PROVIDER || 'off').trim().toLowerCase();\n  const timeoutMs = positiveNumber(env.PILLPAL_AI_TIMEOUT_MS) || 10000;\n  const configuredConfidence = Number(env.PILLPAL_AI_MIN_CONFIDENCE);\n  const minConfidence = Number.isFinite(configuredConfidence)\n    ? Math.min(Math.max(configuredConfidence, 0), 1)\n    : 0.6;\n\n  if (requested === 'ollama') {\n    return {\n      provider: 'ollama',\n      usable: true,\n      timeoutMs,\n      minConfidence,\n      model: normalizeText(env.OLLAMA_MODEL || 'gemma3:1b', 80),\n      baseUrl: String(env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').trim().replace(/\\/+$/, ''),\n    };\n  }\n\n  if (requested === 'gemini') {\n    const apiKey = String(env.GEMINI_API_KEY || '').trim();\n    return {\n      provider: apiKey ? 'gemini' : 'off',\n      usable: Boolean(apiKey),\n      note: apiKey ? null : 'missing_api_key',\n      timeoutMs,\n      minConfidence,\n      model: normalizeText(env.GEMINI_MODEL || 'gemini-2.5-flash-lite', 80),\n      baseUrl: String(env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta')\n        .trim()\n        .replace(/\\/+$/, ''),\n      apiKey,\n    };\n  }\n\n  return {\n    provider: 'off',\n    usable: false,\n    note: requested === 'off' ? null : 'unknown_provider',\n    timeoutMs,\n    minConfidence,\n    model: null,\n    baseUrl: null,\n  };\n}\n\nfunction statusPayload(config) {\n  return {\n    available: Boolean(config.usable),\n    provider: config.provider,\n    model: config.provider === 'off' ? null : config.model,\n    min_confidence: config.minConfidence,\n    timeout_ms: config.timeoutMs,\n    note: config.note || null,\n  };\n}\n\nfunction sanitizeRequest(payload, config) {\n  const source = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};\n  const questionId = normalizeText(source.question_id, 40);\n  if (!UNDERSTAND_QUESTIONS.has(questionId)) return { ok: false, error: 'Unsupported question.' };\n\n  const transcript = normalizeText(source.transcript, LIMITS.transcriptChars);\n  if (transcript.length < 2) return { ok: false, error: 'A non-empty transcript is required.' };\n\n  const type = normalizeText(source.type, 30);\n  if (!['single_select', 'confirmation', 'number', 'text'].includes(type)) {\n    return { ok: false, error: 'Unsupported answer type.' };\n  }\n\n  const options = Array.isArray(source.options)\n    ? source.options\n      .slice(0, LIMITS.optionCount)\n      .map(option => ({\n        value: normalizeText(option?.value, LIMITS.optionValueChars),\n        label: normalizeText(option?.label, LIMITS.optionLabelChars),\n      }))\n      .filter(option => option.value)\n    : [];\n  if ((type === 'single_select' || type === 'confirmation') && !options.length) {\n    return { ok: false, error: 'The screen options are missing.' };\n  }\n\n  const minimum = Number.isFinite(Number(source.minimum)) ? Number(source.minimum) : 0;\n  const maximum = Number.isFinite(Number(source.maximum)) ? Number(source.maximum) : 120;\n\n  return {\n    ok: true,\n    context: {\n      questionId,\n      type,\n      options,\n      transcript,\n      language: normalizeText(source.language, 12) || 'en',\n      title: normalizeText(source.title, LIMITS.titleChars),\n      minimum: type === 'number' ? minimum : 0,\n      maximum: type === 'number' ? maximum : 120,\n      minConfidence: config.minConfidence,\n    },\n  };\n}\n\nconst SYSTEM_PROMPT = [\n  'You read an answer spoken out loud to a pharmacy self-service kiosk and map it to the fixed answer values of the question currently on screen.',\n  'Rules:',\n  '- Reply with a single JSON object and nothing else.',\n  '- \"value\" must be copied exactly from the allowed values for this question. Never invent a value and never invent a medicine.',\n  '- The customer may answer in any language, in dialect, or mixing languages. Map the meaning, not the literal words.',\n  '- If the answer is unclear, silent, off-topic, a question back to the kiosk, or fits more than one allowed value, reply {\"value\":\"unknown\",\"confidence\":0}.',\n  '- If the customer asks the kiosk for medical advice or for a medicine, reply {\"value\":\"unknown\",\"confidence\":0}.',\n  '- Never guess on their behalf. An honest \"unknown\" lets the kiosk ask the question again.',\n  '- \"confidence\" is a number between 0 and 1 for how sure you are that \"value\" is what this customer meant.',\n  'Examples:',\n  '- \"no none of that\" on a yes/no safety question -> {\"value\":\"no\",\"confidence\":0.97}',\n  '- \"wa bash n-3ref m3a kolchi, men nhar l-bareh\" (fever since yesterday) on a duration question -> {\"value\":\"1_to_2_days\",\"confidence\":0.8}',\n  '- \"ich habe heute Morgen angefangen\" on a duration question -> {\"value\":\"today\",\"confidence\":0.9}',\n  '- \"welche Tablette ist besser fuer mich?\" -> {\"value\":\"unknown\",\"confidence\":0}',\n].join('\\n');\n\nfunction describeAllowed(context) {\n  if (context.type === 'number') {\n    return `Allowed answer: a whole number between ${context.minimum} and ${context.maximum}. Put the number in \"value\" as digits, for example {\"value\":\"34\",\"confidence\":0.9}.`;\n  }\n  if (context.type === 'text') {\n    return [\n      'Allowed answer: the names the customer listed, separated by commas, written the way they are normally spelled.',\n      'Keep only the names of medicines, ingredients or health conditions. Do not add anything the customer did not say.',\n      'Example: \"sui tablet b paracetamol w ibuprofen\" -> {\"value\":\"paracetamol, ibuprofen\",\"confidence\":0.85}.',\n    ].join(' ');\n  }\n  const lines = context.options.map(option => `- \"${option.value}\" means \"${option.label || option.value}\"`);\n  return ['Allowed values (copy one exactly into \"value\"):'].concat(lines).join('\\n');\n}\n\nfunction buildMessages(context) {\n  const user = [\n    `Question on screen: ${context.title || context.questionId}`,\n    describeAllowed(context),\n    `The customer said this (language hint: ${context.language}):`,\n    `\"${context.transcript}\"`,\n    'Reply with the JSON object now.',\n  ].join('\\n\\n');\n  return { system: SYSTEM_PROMPT, user };\n}\n\nfunction buildCall(config, context) {\n  const messages = buildMessages(context);\n  if (config.provider === 'ollama') {\n    return {\n      provider: 'ollama',\n      url: `${config.baseUrl}/api/chat`,\n      headers: { 'Content-Type': 'application/json' },\n      body: {\n        model: config.model,\n        stream: false,\n        format: 'json',\n        options: { temperature: 0, top_p: 0, num_predict: 60, seed: 7 },\n        messages: [\n          { role: 'system', content: messages.system },\n          { role: 'user', content: messages.user },\n        ],\n      },\n    };\n  }\n  return {\n    provider: 'gemini',\n    url: `${config.baseUrl}/models/${encodeURIComponent(config.model)}:generateContent`,\n    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': config.apiKey },\n    body: {\n      systemInstruction: { parts: [{ text: messages.system }] },\n      contents: [{ role: 'user', parts: [{ text: messages.user }] }],\n      generationConfig: {\n        temperature: 0,\n        topP: 0,\n        maxOutputTokens: 64,\n        responseMimeType: 'application/json',\n      },\n    },\n  };\n}\n\nfunction extractModelText(provider, json) {\n  if (provider === 'ollama') return String(json?.message?.content ?? '');\n  const parts = json?.candidates?.[0]?.content?.parts;\n  if (!Array.isArray(parts)) return '';\n  return parts.map(part => (typeof part?.text === 'string' ? part.text : '')).join('');\n}\n\nfunction parseJsonObject(text) {\n  const cleaned = String(text ?? '')\n    .replace(/```/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n  const start = cleaned.indexOf('{');\n  const end = cleaned.lastIndexOf('}');\n  if (start < 0 || end <= start) return null;\n  try {\n    const parsed = JSON.parse(cleaned.slice(start, end + 1));\n    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;\n  } catch (_) {\n    return null;\n  }\n}\n\nfunction reject(reason, confidence = 0) {\n  return { matched: false, value: null, label: null, confidence, reason };\n}\n\nconst NEGATION_ONLY = /^(no|none|nothing|not any|nein|keine|nichts|la|walo|rien)(\\s+(at all|really|all of them|of them|medicines?|allerg(y|ies)|dinge))?$/i;\n\nfunction extractTerms(value) {\n  const seen = [];\n  for (const raw of String(value ?? '').split(/[,;\\n]/)) {\n    const term = normalizeText(raw.replace(/^(and|au|und|wa|u|et)\\s+/i, ''), LIMITS.termChars);\n    if (!term || NEGATION_ONLY.test(term)) continue;\n    if (!seen.some(existing => existing.toLowerCase() === term.toLowerCase())) seen.push(term);\n    if (seen.length >= LIMITS.terms) break;\n  }\n  return seen;\n}\n\nfunction validateModelAnswer(modelText, context) {\n  const parsed = parseJsonObject(modelText);\n  if (!parsed) return reject('unparseable');\n\n  const rawConfidence = Number(parsed.confidence);\n  const confidence = Number.isFinite(rawConfidence) ? Math.min(Math.max(rawConfidence, 0), 1) : 0;\n  if (confidence < context.minConfidence) return reject('low_confidence', confidence);\n\n  const answer = normalizeText(parsed.value, LIMITS.answerChars);\n  if (!answer || answer.toLowerCase() === 'unknown' || answer.toLowerCase() === 'none') {\n    return reject('not_answered', confidence);\n  }\n\n  if (context.type === 'number') {\n    const digits = answer.match(/\\d{1,3}/);\n    if (!digits) return reject('no_number', confidence);\n    const number = Number(digits[0]);\n    if (!Number.isInteger(number) || number < context.minimum || number > context.maximum) {\n      return reject('out_of_range', confidence);\n    }\n    return { matched: true, value: number, label: String(number), confidence, reason: null };\n  }\n\n  if (context.type === 'text') {\n    if (/[<>&]/.test(answer)) return reject('value_not_allowed', confidence);\n    const terms = extractTerms(answer);\n    if (!terms.length) return reject('no_terms', confidence);\n    const value = terms.join(', ').slice(0, LIMITS.answerChars);\n    return { matched: true, value, label: value, confidence, reason: null };\n  }\n\n  const wanted = answer.toLowerCase();\n  const option = context.options.find(candidate => candidate.value.toLowerCase() === wanted)\n    || context.options.find(candidate => (candidate.label || '').toLowerCase() === wanted)\n    || context.options.find(candidate => candidate.value.toLowerCase() === wanted.replace(/\\s+/g, '_'));\n\n  if (!option) return reject('value_not_allowed', confidence);\n  return { matched: true, value: option.value, label: option.label || option.value, confidence, reason: null };\n}\n\nconst sanitized = $('Sanitize Request').first().json || {};\nconst context = sanitized.context || {};\nconst modelText = extractModelText('gemini', $input.first().json || {});\nconst verdict = modelText ? validateModelAnswer(modelText, context) : reject('provider_failed');\nreturn [{\n  json: {\n    matched: verdict.matched === true,\n    value: verdict.value ?? null,\n    label: verdict.label ?? null,\n    confidence: verdict.confidence ?? 0,\n    reason: verdict.reason || null,\n    provider: 'gemini-n8n',\n  },\n}];\n"
+      },
+      "id": "589b0fa6-a763-4956-9496-b07a6a0098bf",
+      "name": "Validate Understanding",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        180,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generated from web/answer-understanding.js by n8n/build-understand-workflow.mjs.\n// Edit the module, not this node.\nconst error = $json.error || 'The request is not usable.';\nreturn [{\n  json: {\n    matched: false,\n    value: null,\n    label: null,\n    confidence: 0,\n    reason: 'bad_request',\n    detail: String(error).slice(0, 120),\n    provider: 'gemini-n8n',\n  },\n}];\n"
+      },
+      "id": "096389b5-4352-46ce-88be-cc67af0a8e02",
+      "name": "Refuse Bad Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -60,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              },
+              {
+                "name": "X-Content-Type-Options",
+                "value": "nosniff"
+              }
+            ]
+          }
+        }
+      },
+      "id": "3617c3e2-d574-46f3-b476-9cf96b10cc44",
+      "name": "Return Understanding",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        420,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "pillpal-understand-status",
+        "responseMode": "responseNode",
+        "authentication": "headerAuth",
+        "options": {}
+      },
+      "id": "5bdf2266-088a-4528-a693-4b25bcb89031",
+      "name": "Status Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -780,
+        380
+      ],
+      "webhookId": "da57915d-daaa-45ff-91b8-ee517e2ea74d",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "sKKZe6liXy5SsWfl",
+          "name": "Backend Service Auth Medtest"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generated from web/answer-understanding.js by n8n/build-understand-workflow.mjs.\n// Edit the module, not this node.\nreturn [{\n  json: {\n    available: true,\n    provider: 'gemini-n8n',\n    model: \"gemini-3.5-flash-lite\",\n    min_confidence: 0.6,\n    timeout_ms: 12000,\n    note: null,\n  },\n}];\n"
+      },
+      "id": "c164828a-cd2d-4f46-9c61-77565390fabb",
+      "name": "Report Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -540,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              },
+              {
+                "name": "X-Content-Type-Options",
+                "value": "nosniff"
+              }
+            ]
+          }
+        }
+      },
+      "id": "1cace85b-4ff0-432a-9da9-2338f8fb6bd1",
+      "name": "Return Status",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        -300,
+        380
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Understand Webhook": {
+      "main": [
+        [
+          {
+            "node": "Sanitize Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sanitize Request": {
+      "main": [
+        [
+          {
+            "node": "Usable Request?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Usable Request?": {
+      "main": [
+        [
+          {
+            "node": "Ask Gemini",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Refuse Bad Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask Gemini": {
+      "main": [
+        [
+          {
+            "node": "Validate Understanding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Understanding": {
+      "main": [
+        [
+          {
+            "node": "Return Understanding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refuse Bad Request": {
+      "main": [
+        [
+          {
+            "node": "Return Understanding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Status Webhook": {
+      "main": [
+        [
+          {
+            "node": "Report Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report Status": {
+      "main": [
+        [
+          {
+            "node": "Return Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "d72230a7-a149-4f3c-98b6-2e4a6b3a49a8",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "nodeGroups": [],
+  "id": "68e5298be6494dda",
+  "tags": []
+}

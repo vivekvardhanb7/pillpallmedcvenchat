@@ -5,6 +5,25 @@
 
 ---
 
+## 0. Where things stand (end of the 2026-11-03 session)
+
+Everything in Phases 1-4 is deployed and tested; the table in section 1 is the
+snapshot from before this work and is kept for the evidence trail.
+
+| Area | State now |
+|---|---|
+| Offline suites (`npm test`) | engine + matcher + outcome sanitiser + AI guardrails + sidecar nodes + i18n + voice mapper + drift, all green |
+| Journeys | 36 journeys + 14 abuse checks = 50 offline assertions; live run is 35 pass + 1 skipped (needs a catalogue row this database does not have) |
+| `kiosk_outcome_log` | **Writing.** Was the long-standing bug: the UI import strips Supabase parameters and the Supabase insert node then fails with `Could not get parameter "tableId"`. Replaced by a sanitising Code node + PostgREST HTTP Request; verified live with real rows |
+| Deployed vs repository | `npm run check -- --live` reports MATCH on all 7 code nodes of both workflows |
+| Spoken-answer understanding | New. French, Darija and MSA answers map onto on-screen values in ~0.9-1.5 s, always read back before use. Two routes: the kiosk's own `/api/understand` bridge and a Gemini sidecar inside n8n (`Tq1UTgrin8HYd9s6`), which is what the kiosk currently uses |
+| Safety path | Unchanged. No model reaches a decision; `dispense_authorized` is still `false` everywhere |
+
+Open items are in section 9 (M8, M9) and section 10 (decisions C, F, G still
+unanswered).
+
+---
+
 ## 1. Verified baseline (measured today, not assumed)
 
 | Check | Result |
@@ -34,11 +53,12 @@
 | I6 | Over-age customers get product-fault wording | `all_products_blocked` → "products did not pass all safety checks" | Medium |
 | I7 | German kiosk is silent but claims to speak | `GET /api/tts` → `de.available=false, model=false`; UI still shows "SPEAKING…" | Medium |
 | I8 | `en`-only product is invisible to a German customer, with no hint | Verified in browser: DE journey → `no_approved_product_for_pathway` | Medium |
-| I9 | Zero traceability of what the kiosk is asked | `chat_sessions` / `decisions` exist in `supabase/migrations/001_medical_chatbot_schema.sql`; **no code writes to them** | High |
+| I9 | Zero traceability of what the kiosk is asked | **Closed.** `kiosk_outcome_log` now receives one anonymised row per finished assessment from the deployed workflow | High |
 | I10 | No version control | Project is not a git repo — this is why the deployed workflow drifted from `n8n/src` unnoticed | High |
 | I11 | Re-import leaves credentials unbound | Repo builder names them `Header Auth account` / `Supabase account`; instance has `Backend Service Auth Medtest` / `PILLPALL CHATBOT` | Medium |
 | I12 | Shared secret is guessable and ships in the browser bundle | `web/config.js` is public; current value is the project name | Medium |
-| I13 | `npm run audit:catalog` cannot run | No `.env` (`SUPABASE_URL` + service-role key) | Low |
+| I13 | `npm run audit:catalog` cannot run | **Closed.** `.env` holds `SUPABASE_URL` + service-role key | Low |
+| I14 | A spoken answer in French, Darija or Arabic is not understood | The deterministic mapper knows EN/DE wording only; free text used to be stored verbatim, so an Arabic allergy could never match the catalogue's Latin-script rule terms | Medium — fixed by the helper in section 6 of the runbook |
 
 ---
 
@@ -188,7 +208,10 @@
 | M4 | Download `de_DE-thorsten-medium.onnx` + `.onnx.json` into `tools/piper/voices/` for German voice | piper VOICES repo |
 | M5 | Run migration SQL I provide (007, retention) in the Supabase SQL Editor | Supabase dashboard |
 | M6 | **To test the product path at all:** run `supabase/migrations/005_product_path_test_fixture.sql` (adds the synthetic `ZZ` test product only; no real medicine is enabled), then `npm run test:product-path` | Supabase SQL Editor |
-| M7 | Verify only one active workflow uses path `pillpal-chat-turn` | n8n → Workflows |
+| M7 | Verify only one active workflow uses path `pillpal-chat-turn` (and one uses `pillpal-understand`) | n8n → Workflows |
+| M8 | Delete the 5 early test rows from the outcome log — `service_role` has only `select, insert`, so REST cannot do it: `delete from public.kiosk_outcome_log where session_key = 'session_invalid';` | Supabase SQL Editor |
+| M9 | Before real customers: set a short n8n execution-data retention window (spoken answers are stored in execution data), and write down the loi 09-08 / GDPR position on sending a symptom to Gemini | n8n → Settings; legal note |
+| M10 | Rotate `webhookSecret` — the old value was written in plain text into `PLAN.md` and ships in `web/config.js` anyway | n8n credential + `web/config.js` |
 
 ---
 
@@ -203,24 +226,32 @@
 - **G** — real auth route: per-device tokens or IP allowlist (T19)?
 
 ## 11. Explicitly out of scope
-- No LLM (Gemini, MedGemma, or any model) in the safety, eligibility, or product-selection path. Rephrasing-only sidecar is the only permitted future use.
-- No paid API services — the stack stays self-hosted (n8n, Supabase, Piper).
+- No LLM (Gemini, MedGemma, or any model) in the safety, eligibility, or product-selection path. The one permitted use is language understanding: mapping a transcript onto a value that is already on the screen, always read back to the customer before it is used.
+- No diagnosis, no medicine recommendation invented by a model, no dose from a model. The catalogue and the deterministic matcher remain the only sources of product facts.
 - No dispensing authorisation; `dispense_authorized` stays `false` on every response.
 - No enabling of real Morocco medicines without documented clinical and legal review.
+- Note: the "no paid API services" line that used to sit here is no longer true. Gemini is called for answer understanding, through either the kiosk's own bridge or the n8n sidecar. The self-hosted parts (n8n, Supabase, Piper) still carry every decision.
 
 ## 12. Verification runbook (copy-paste)
 
 ```powershell
 cd "V:\LD Projects\PILLPALMEDVEN"
-npm test                     # engine, i18n, voice mapper
-npm run test:journeys        # 42 offline checks
-$env:PILLPAL_WEBHOOK_SECRET="PillPalMedVend"
-npm run test:journeys:live   # 31 journeys against production
-npm run build:workflow       # after any n8n/src change, then re-import (M2)
-curl.exe -s -o NUL -w "%{http_code}" -X POST https://n8n.naf-cloudsystem.de/webhook/pillpal-chat-turn -H "Content-Type: text/plain" -H "x-pillpal-auth: PillPalMedVend" -d '{\"reset\":true}'
+npm test                     # engine, guardrails, sidecar nodes, i18n, voice mapper, drift
+npm run test:journeys        # 50 checks (36 journeys + 14 abuse cases)
+npm run check -- --live      # both deployed workflows match the repository
+npm run smoke:live           # needs .env (PILLPAL_WEBHOOK_SECRET) or the shell variable
+npm run test:journeys:live   # 35 journeys against production, 1 skipped
+npm run test:ai              # 14 spoken answers in FR / Darija / MSA through a real session
+npm run test:ai:sidecar      # the hosted Gemini path
+npm run build:workflow       # after any n8n/src change, then push or re-import (M2)
+npm run build:sidecar        # after any change to web/answer-understanding.js
 ```
 
-`200` = healthy. `403` = secret mismatch. Anything else = workflow not active.
+`.env` is loaded by every live script, so no shell variable has to be typed. The
+webhook secret itself is deliberately not written into this file any more: `200`
+from `POST /webhook/pillpal-chat-turn` means healthy, `403` means the secret in
+`web/config.js` no longer matches the n8n Header Auth value, anything else means
+the workflow is not active.
 
 ---
 

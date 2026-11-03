@@ -53,6 +53,34 @@ const PATHWAYS = [
 ];
 
 const PATHWAY_CODES = new Set(PATHWAYS.map(p => p.value));
+
+// Declared clinical scope of this machine. Every category stays on the menu so a
+// customer can state their problem and the outcome log records what was asked
+// for, but anything outside this set is refused on the first tap instead of
+// running a full interview that cannot end in a recommendation. Widen this only
+// together with clinical and legal sign-off on approved products for the
+// pathway, and never because a product row was flipped to enabled.
+const SUPPORTED_PATHWAYS = new Set(['pain_fever']);
+
+const GENERIC_RED_FLAGS = [
+  'trouble breathing, chest pressure, fainting, confusion, significant bleeding, a sudden extreme symptom, or being unable to keep fluids down',
+];
+
+// Alarm features a pharmacist screens before recommending any analgesic or
+// antipyretic. Fever and headache have a different danger profile from the
+// generic list, and missing meningitis or sepsis features is the failure that
+// matters here.
+const RED_FLAGS_BY_PATHWAY = {
+  pain_fever: [
+    'stiff neck with sensitivity to light, or a rash that does not fade when you press a glass on it',
+    'confusion, fainting, or difficulty staying awake',
+    'trouble breathing, chest pain or pressure',
+    'a sudden severe headache unlike any you have had before',
+    'fever above 39.5 C, or fever that does not come down after medicine',
+    'you are immunosuppressed (chemotherapy, transplant, long-term steroids) or pregnant',
+  ],
+};
+
 const DURATION_CODES = new Set(['today', '1_to_2_days', '3_to_7_days', 'more_than_7_days']);
 const SEVERITY_CODES = new Set(['mild', 'moderate', 'severe']);
 const PREGNANCY_CODES = new Set(['pregnant', 'breastfeeding', 'both', 'no', 'not_applicable', 'prefer_not_to_say']);
@@ -122,7 +150,7 @@ function option(value, label, extra = {}) {
   return { value, label, ...extra };
 }
 
-function screenFor(step, error = null) {
+function screenFor(step, error = null, pathwayCode = null) {
   const common = { question_id: step, required: true, error };
   switch (step) {
     case 'symptom':
@@ -165,18 +193,22 @@ function screenFor(step, error = null) {
           option('severe', 'Severe'),
         ],
       };
-    case 'warning_signs':
+    case 'warning_signs': {
+      const flags = RED_FLAGS_BY_PATHWAY[pathwayCode] || GENERIC_RED_FLAGS;
       return {
         ...common,
         type: 'single_select',
         title: 'Do any serious warning signs apply?',
-        subtitle: 'Examples include trouble breathing, chest pressure, fainting, confusion, significant bleeding, a sudden extreme symptom, or being unable to keep fluids down. This general list is not a complete pathway-specific clinical screen.',
+        pathway_code: pathwayCode || null,
+        red_flags: flags,
+        subtitle: `Check whether any of these apply to you right now: ${flags.join('; ')}. If you are unsure, choose "I am not sure".`,
         options: [
           option('no', 'No, none of these'),
           option('yes', 'Yes, one or more'),
           option('not_sure', 'I am not sure'),
         ],
       };
+    }
     case 'pregnancy_breastfeeding':
       return {
         ...common,
@@ -298,7 +330,7 @@ function questionResponse(sessionId, state, error = null) {
       ...responseBase(sessionId, state),
       outcome: 'MORE_INFORMATION',
       message: error || 'Please answer the next question.',
-      screen: screenFor(state.step, error),
+      screen: screenFor(state.step, error, state.pathway_code),
       summary: state.step === 'confirm' ? summaryFor(state) : null,
     },
   }];
@@ -346,6 +378,17 @@ function evaluateBeforeCatalog(sessionId, state) {
       'NO_SUITABLE_PRODUCT',
       'This symptom is outside the currently supported pathways. Please visit a nearby clinic, doctor or pharmacy for advice.',
       ['unsupported_pathway'],
+    );
+  }
+  // Re-checked here as well, because a client that forges a later step must not
+  // be able to reach the catalogue with a pathway this machine never assessed.
+  if (!SUPPORTED_PATHWAYS.has(state.pathway_code)) {
+    return finalResponse(
+      sessionId,
+      state,
+      'NO_SUITABLE_PRODUCT',
+      'This machine does not yet offer a supported self-care pathway for that symptom, so a pharmacist or doctor should assess it. Please visit a nearby clinic, doctor or pharmacy.',
+      ['pathway_not_serviced'],
     );
   }
   if (state.warning_signs !== false) {
@@ -447,6 +490,15 @@ switch (state.step) {
         'NO_SUITABLE_PRODUCT',
         'This symptom is outside the currently supported pathways. Please visit a nearby clinic, doctor or pharmacy for advice.',
         ['unsupported_pathway'],
+      );
+    }
+    if (!SUPPORTED_PATHWAYS.has(selected)) {
+      return finalResponse(
+        id,
+        state,
+        'NO_SUITABLE_PRODUCT',
+        'This machine does not yet offer a supported self-care pathway for that symptom, so a pharmacist or doctor should assess it. Please visit a nearby clinic, doctor or pharmacy.',
+        ['pathway_not_serviced'],
       );
     }
     state.step = 'age';

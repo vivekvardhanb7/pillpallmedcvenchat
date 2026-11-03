@@ -21,6 +21,7 @@ and reviewed.
 - Local static web server
 - Automated engine and spoken-answer tests, including product safety blocking
 - Optional synthetic product-result fixture
+- Optional multilingual answer understanding (kiosk bridge or Gemini sidecar in n8n), read back before use
 - Docker Compose configuration for self-hosted n8n
 
 ## 1. Create the Supabase schema
@@ -56,16 +57,31 @@ Node.js 20 or newer is required. No npm packages need to be installed.
 cd "V:\LD Projects\PILLPALMEDVEN"
 npm test
 npm run build:workflow
+npm run build:sidecar   # only if the spoken-answer helper (section 8) is used
 ```
 
-`npm run test:journeys` walks 30+ simulated customer conversations through the
-engine (every pathway, refusals, safety blocks, invalid and tampered answers).
-`npm run test:journeys:live` runs the same journeys against a real webhook; set
-`$env:PILLPAL_WEBHOOK_SECRET` first so the requests carry the auth header.
+`npm run test:journeys` walks 36 simulated customer conversations plus 14 abuse
+and tampering checks through the engine (every pathway, refusals, safety blocks,
+invalid and forged answers). `npm run test:journeys:live` runs the same journeys
+against a real webhook; every live script loads `.env` for the auth header.
+`npm run check -- --live` compares both deployed workflows against this
+repository node by node.
 
-Generated workflow:
+Generated workflows:
 
-`n8n/workflows/PILLPAL_MedAssist_Supabase_Safety_Chat_MVP.json`
+`n8n/workflows/PILLPAL_MedAssist_Supabase_Safety_Chat_MVP.json` (safety path)
+`n8n/workflows/PILLPAL_Understand_Sidecar.json` (optional answer helper)
+
+On a hosted instance where you cannot restart the container, push the built JSON
+through the n8n API instead of the UI import:
+
+```powershell
+node scripts/n8n-api.mjs push <workflowId> n8n/workflows/<file>.json --yes
+```
+
+The UI import silently strips the Supabase node's table and column parameters, so
+the node looks right in the editor and fails at run time. That is also why the
+outcome logger is an HTTP Request to PostgREST rather than a Supabase node.
 
 ## 3. Configure n8n
 
@@ -77,6 +93,10 @@ Add these environment variables to the n8n server and restart it:
 SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVICE_ROLE_KEY
 ```
+
+On an instance you cannot restart, skip the env vars and bind a **Supabase
+credential** to the two Supabase nodes instead - the built JSON already references
+one by id, and a credential works even when `$env` is blocked.
 
 The service-role key belongs only on the n8n server. Never add it to `web/config.js`
 or browser code.
@@ -294,6 +314,33 @@ directly from Supabase and reports:
 
 Disabled products are counted but not checked. Run this before enabling any
 real medicine and after every catalog change.
+
+## 8. Understanding a hard-to-parse answer (optional)
+
+The built-in voice mapper knows the wording the kiosk itself speaks. A customer
+who answers in French, Darija or Arabic instead ("j'ai tres mal a la tete",
+"عندي حساسية من الأسبرين") used to get "sorry, I did not catch that", and a typed
+free-text answer was stored word for word - which meant an allergy named in
+Arabic could never match the catalogue's Latin-script rule terms.
+
+An optional helper maps such an answer onto a value that is already on the screen
+and the kiosk reads it back before using it. It is a translation layer, not a
+decision-maker:
+
+- it only ever returns a value from the current screen's option list (or a number
+  inside the screen's bounds), so it cannot invent a medicine or a symptom
+- the kiosk's session state, `outcome` and `dispense_authorized` are never sent
+  to it; the request is rebuilt field by field from the transcript and the screen
+- low confidence, an unclear answer or a question back to the kiosk returns
+  `matched: false` and the question is simply asked again
+- every interpreted answer goes through the "I understood X. Is that correct?"
+  confirmation, and nothing interpreted is applied silently
+- the safety engine, the eligibility rules and the product matcher are unchanged
+
+Two routes, same contract: the kiosk's own `/api/understand` bridge, or a Gemini
+sidecar workflow inside n8n that holds the provider key as a credential. Section 6
+of `RUNBOOK.md` covers setup, timings, the guardrail tests and the privacy points
+that need a decision before a shop deployment.
 
 ## Product approval behavior
 

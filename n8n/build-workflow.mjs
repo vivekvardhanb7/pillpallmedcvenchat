@@ -4,8 +4,30 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
+const projectRoot = resolve(here, '..');
+try {
+  process.loadEnvFile(resolve(projectRoot, '.env'));
+} catch {
+  // .env is optional except for the one value needed below.
+}
+
 const intakeCode = await readFile(resolve(here, 'src/intake-and-safety-engine.js'), 'utf8');
 const catalogCode = await readFile(resolve(here, 'src/catalog-decision.js'), 'utf8');
+const outcomeCode = await readFile(resolve(here, 'src/outcome-log-payload.js'), 'utf8');
+
+// The outcome row is posted straight to PostgREST. The Supabase node's insert
+// operation cannot be configured from generated JSON: the UI strips its
+// resource-mapped columns on import and the runtime then fails with
+// `Could not get parameter "tableId"`. Reading the catalogue through the same
+// credential as a plain REST call is what the kiosk server already does.
+const supabaseRestBase = String(process.env.SUPABASE_URL || '').trim().replace(/\/+$/, '');
+if (!supabaseRestBase) {
+  console.error('SUPABASE_URL is required to build the outcome log node (see .env.example).');
+  process.exit(1);
+}
+const supabaseCredential = {
+  supabaseApi: { id: '2LlBAYIF92xtHmcJ', name: 'PILLPALL CHATBOT' },
+};
 
 const workflow = {
   name: 'PILLPAL MedAssist - Supabase Safety Chat MVP',
@@ -153,41 +175,40 @@ const workflow = {
       position: [760, 100],
     },
     {
+      parameters: { jsCode: outcomeCode },
+      id: randomUUID(),
+      name: 'Build Outcome Log Row',
+      type: 'n8n-nodes-base.code',
+      typeVersion: 2,
+      position: [1000, 40],
+    },
+    {
+      // Logging happens after the customer already has their response, and this
+      // node uses onError: continueRegularOutput, so a Supabase outage or a
+      // rejected row can never take the touchscreen down.
       parameters: {
-        operation: 'insert',
-        tableId: 'kiosk_outcome_log',
-        columns: {
-          mappingMode: 'defineBelow',
-          value: {
-            session_key: '={{ $json.session_id }}',
-            country_code: '={{ ($json.state && $json.state.country_code) || "MA" }}',
-            language_code: '={{ ($json.state && $json.state.language_code) || "en" }}',
-            pathway_code: '={{ ($json.state && $json.state.pathway_code) || "none" }}',
-            age_band: '={{ !$json.state || typeof $json.state.age_years !== "number" ? "unknown" : $json.state.age_years < 18 ? "under_18" : $json.state.age_years <= 30 ? "18_30" : $json.state.age_years <= 45 ? "31_45" : $json.state.age_years <= 65 ? "46_65" : "over_65" }}',
-            duration_code: '={{ ($json.state && $json.state.duration_code) || "unknown" }}',
-            severity: '={{ ($json.state && $json.state.severity) || "unknown" }}',
-            outcome: '={{ $json.outcome }}',
-            reasons: '={{ ($json.reason_codes || []).join(",") }}',
-            turns: '={{ $json.turns || 0 }}',
-            elapsed_ms: '={{ $json.elapsed_ms || 0 }}',
-          },
-          matchingColumns: [],
-          schema: [],
-        },
+        method: 'POST',
+        url: `${supabaseRestBase}/rest/v1/kiosk_outcome_log`,
+        authentication: 'predefinedCredentialType',
+        nodeCredentialType: 'supabaseApi',
+        sendBody: true,
+        specifyBody: 'json',
+        jsonBody: '={{ JSON.stringify($json) }}',
         options: {},
       },
       id: randomUUID(),
-      name: 'Log Outcome (anonymised)',
-      type: 'n8n-nodes-base.supabase',
-      typeVersion: 1,
-      position: [1000, 40],
+      name: 'Insert Outcome Log Row',
+      type: 'n8n-nodes-base.httpRequest',
+      typeVersion: 4.2,
+      position: [1220, 40],
+      alwaysOutputData: true,
+      // A logging failure must never affect the customer, and retries are off on
+      // purpose: PostgREST answers 201 with the inserted row so n8n reads a
+      // response it can parse, but any attempt that dies after the write would
+      // otherwise double-count one assessment.
       onError: 'continueRegularOutput',
-      credentials: {
-        supabaseApi: {
-          id: '2LlBAYIF92xtHmcJ',
-          name: 'PILLPALL CHATBOT',
-        },
-      },
+      retryOnFail: false,
+      credentials: supabaseCredential,
     },
   ],
   pinData: {},
@@ -215,9 +236,12 @@ const workflow = {
     },
     'Assessment Finished?': {
       main: [
-        [{ node: 'Log Outcome (anonymised)', type: 'main', index: 0 }],
+        [{ node: 'Build Outcome Log Row', type: 'main', index: 0 }],
         [],
       ],
+    },
+    'Build Outcome Log Row': {
+      main: [[{ node: 'Insert Outcome Log Row', type: 'main', index: 0 }]],
     },
   },
   active: false,

@@ -11,6 +11,16 @@ window.PILLPAL_CONFIG = {
   countryCode: 'MA',
   languageCode: 'en',
   inactivityMs: 120000,
+
+  // Optional: understand an answer the built-in wording cannot map (French,
+  // Darija, Arabic). Leave both out to use the kiosk's own bridge, which reads
+  // its provider settings from .env. Point them at the n8n sidecar workflow to
+  // keep the provider call inside n8n instead of on this machine; the sidecar
+  // uses the same X-PILLPAL-Auth header as webhookSecret above. Neither route
+  // decides anything - the safety workflow still sees ordinary screen answers.
+  // understandUrl: 'https://YOUR_N8N_HOST/webhook/pillpal-understand',
+  // understandStatusUrl: 'https://YOUR_N8N_HOST/webhook/pillpal-understand-status',
+
   voice: {
     provider: 'piper',
     ttsUrl: '/api/tts',

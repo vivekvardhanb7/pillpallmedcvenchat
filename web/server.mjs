@@ -5,6 +5,14 @@ import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { basename, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  buildCall,
+  extractModelText,
+  readProviderConfig,
+  sanitizeRequest,
+  statusPayload,
+  validateModelAnswer,
+} from './answer-understanding.js';
 
 const webRoot = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const projectRoot = resolve(webRoot, '..');
@@ -291,6 +299,90 @@ async function handleTtsRequest(request, response) {
   }
 }
 
+const aiConfig = readProviderConfig(process.env);
+const MAX_UNDERSTAND_BODY_BYTES = 8 * 1024;
+const MAX_AI_RUNNING = 2;
+let aiRunning = 0;
+
+function logUnderstandingResult(context, result) {
+  if (process.env.PILLPAL_AI_LOG_TRANSCRIPT === '1') {
+    console.log(`[understand] ${context.questionId} matched=${result.matched} reason=${result.reason || 'ok'} confidence=${result.confidence} transcript="${context.transcript}"`);
+    return;
+  }
+  console.log(`[understand] ${context.questionId} matched=${result.matched} reason=${result.reason || 'ok'} confidence=${result.confidence}`);
+}
+
+async function handleUnderstandRequest(request, response) {
+  if (!aiConfig.usable) {
+    sendJson(response, 503, {
+      error: 'Spoken-answer understanding is switched off on this kiosk.',
+      code: 'ai_unavailable',
+      ...statusPayload(aiConfig),
+    });
+    return;
+  }
+
+  let payload;
+  try {
+    payload = await readJsonBody(request, MAX_UNDERSTAND_BODY_BYTES);
+  } catch (error) {
+    const tooLarge = error.statusCode === 413;
+    sendJson(response, tooLarge ? 413 : 400, {
+      error: tooLarge ? 'Request body is too large.' : 'Invalid JSON body.',
+      code: 'bad_request',
+    });
+    return;
+  }
+
+  const prepared = sanitizeRequest(payload, aiConfig);
+  if (!prepared.ok) {
+    sendJson(response, 400, { error: prepared.error, code: 'bad_request' });
+    return;
+  }
+  const context = prepared.context;
+
+  if (aiRunning >= MAX_AI_RUNNING) {
+    sendJson(response, 503, { error: 'The answer helper is busy.', code: 'ai_busy' });
+    return;
+  }
+
+  const call = buildCall(aiConfig, context);
+  aiRunning += 1;
+  try {
+    const upstream = await fetch(call.url, {
+      method: 'POST',
+      headers: call.headers,
+      body: JSON.stringify(call.body),
+      signal: AbortSignal.timeout(aiConfig.timeoutMs),
+    });
+    if (!upstream.ok) {
+      logUnderstandingResult(context, { matched: false, reason: `http_${upstream.status}`, confidence: 0 });
+      sendJson(response, 502, { error: 'The answer helper is not responding.', code: 'ai_failed' });
+      return;
+    }
+    const modelText = extractModelText(call.provider, await upstream.json());
+    const result = validateModelAnswer(modelText, context);
+    logUnderstandingResult(context, result);
+    sendJson(response, 200, {
+      matched: result.matched,
+      value: result.matched ? result.value : null,
+      label: result.matched ? result.label : null,
+      confidence: result.confidence,
+      reason: result.matched ? null : result.reason,
+      provider: aiConfig.provider,
+    });
+  } catch (error) {
+    const timedOut = error?.name === 'TimeoutError' || error?.name === 'AbortError';
+    logUnderstandingResult(context, { matched: false, reason: timedOut ? 'timeout' : 'unreachable', confidence: 0 });
+    sendJson(response, 503, {
+      error: timedOut ? 'The answer helper took too long.' : 'The answer helper could not be reached.',
+      code: timedOut ? 'ai_timeout' : 'ai_unreachable',
+    });
+  } finally {
+    aiRunning -= 1;
+  }
+}
+
 async function serveStatic(pathname, response) {
   const requested = pathname === '/' ? '/index.html' : pathname;
   const safeRelative = normalize(decodeURIComponent(requested)).replace(/^([/\\])+/, '');
@@ -315,6 +407,13 @@ createServer(async (request, response) => {
     if (url.pathname === '/api/tts') {
       if (request.method === 'GET') return sendJson(response, 200, ttsStatus());
       if (request.method === 'POST') return await handleTtsRequest(request, response);
+      response.writeHead(405, { Allow: 'GET, POST' });
+      return response.end();
+    }
+
+    if (url.pathname === '/api/understand') {
+      if (request.method === 'GET') return sendJson(response, 200, statusPayload(aiConfig));
+      if (request.method === 'POST') return await handleUnderstandRequest(request, response);
       response.writeHead(405, { Allow: 'GET, POST' });
       return response.end();
     }
@@ -349,4 +448,7 @@ createServer(async (request, response) => {
   for (const model of Object.values(status.models)) {
     if (!model.available) console.warn(`  ${model.language} voice unavailable (model ${model.model ? 'found' : 'missing'}, config ${model.config ? 'found' : 'missing'})`);
   }
+  const ai = statusPayload(aiConfig);
+  if (ai.available) console.log(`Spoken-answer understanding: ${ai.provider} (${ai.model}, min confidence ${ai.min_confidence}, ${ai.timeout_ms} ms)`);
+  else console.log(`Spoken-answer understanding: off${ai.note ? ` (${ai.note})` : ''}. Voice answers use the deterministic mapper only.`);
 });

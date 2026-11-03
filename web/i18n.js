@@ -130,6 +130,7 @@ export const STRINGS = {
     setup: {
       prefix: 'SETUP:',
       configUpdated: 'CONFIG UPDATED — reload this page to apply',
+      aiNotUsable: 'the spoken-answer helper is configured but not usable (missing API key or unknown provider). Voice input still works with the standard answers.',
       dismiss: 'Dismiss notice',
     },
     clarify: {
@@ -170,6 +171,9 @@ export const STRINGS = {
       warning_signs: {
         title: 'Do any serious warning signs apply?',
         subtitle: 'Examples include trouble breathing, chest pressure, fainting, confusion, significant bleeding, a sudden extreme symptom, or being unable to keep fluids down. This general list is not a complete pathway-specific clinical screen.',
+        pain_fever: {
+          subtitle: 'Check whether any of these apply to you right now: a stiff neck with sensitivity to light, or a rash that does not fade when you press a glass on it; confusion, fainting, or difficulty staying awake; trouble breathing, chest pain or pressure; a sudden severe headache unlike any you have had before; fever above 39.5 C, or fever that does not come down after medicine; a weakened immune system (chemotherapy, transplant, long-term steroids) or pregnancy. If you are unsure, choose "I am not sure".',
+        },
       },
       pregnancy_breastfeeding: {
         title: 'Are you pregnant or breastfeeding?',
@@ -281,6 +285,8 @@ export const STRINGS = {
         noApprovedProduct: 'No clinically and legally approved product is currently enabled for this symptom pathway. Please visit a nearby clinic, doctor or pharmacy for advice.',
         allBlocked: 'The available approved products did not pass all safety checks. Please visit a nearby clinic, doctor or pharmacy for advice.',
         ageOutsideRange: 'The approved products for this symptom are suitable for a different age range than the age you entered. Please visit a nearby clinic, doctor or pharmacy for advice.',
+        pathwayNotServiced: 'This machine does not yet offer a supported self-care pathway for that symptom, so a pharmacist or doctor should assess it. Please visit a nearby clinic, doctor or pharmacy.',
+        symptomTooLong: 'You have had this symptom longer than these products are approved for self-treatment. Taking them now could mask a condition that needs assessment. Please visit a nearby clinic, doctor or pharmacy for advice.',
         eligible: 'An approved product matched the completed safety assessment. Review the product information before continuing.',
       },
       strength: 'Strength',
@@ -433,6 +439,7 @@ export const STRINGS = {
     setup: {
       prefix: 'EINRICHTUNG:',
       configUpdated: 'KONFIGURATION AKTUALISIERT – bitte laden Sie diese Seite neu, um sie anzuwenden',
+      aiNotUsable: 'die Sprachantwort-Erkennung ist eingerichtet, aber nicht nutzbar (fehlender API-Schlüssel oder unbekannter Anbieter). Spracheingabe funktioniert weiterhin mit den Standardantworten.',
       dismiss: 'Hinweis schließen',
     },
     clarify: {
@@ -473,6 +480,9 @@ export const STRINGS = {
       warning_signs: {
         title: 'Treffen ernste Warnzeichen zu?',
         subtitle: 'Beispiele sind Atemnot, Brustdruck, Ohnmacht, Verwirrtheit, stärkere Blutungen, ein plötzlich extremes Symptom oder die Unfähigkeit, Flüssigkeit bei sich zu behalten. Diese allgemeine Liste ist keine vollständige klinische Prüfung für jeden Pfad.',
+        pain_fever: {
+          subtitle: 'Prüfen Sie, ob eines dieser Anzeichen gerade auf Sie zutrifft: Nackensteifigkeit mit Lichtempfindlichkeit oder ein Hautausschlag, der beim Drücken eines Glases nicht verblasst; Verwirrtheit, Ohnmacht oder Schwierigkeiten, wach zu bleiben; Atemnot, Brustschmerz oder Druckgefühl; ein plötzlicher sehr starker Kopfschmerz, wie Sie ihn noch nie hatten; Fieber über 39,5 °C oder Fieber, das nach Medikamenteneinnahme nicht sinkt; ein geschwächtes Abwehrsystem (Chemotherapie, Transplantation, langfristige Kortikosteroide) oder Schwangerschaft. Wenn Sie unsicher sind, wählen Sie "Ich bin unsicher".',
+        },
       },
       pregnancy_breastfeeding: {
         title: 'Sind Sie schwanger oder stillen Sie?',
@@ -584,6 +594,8 @@ export const STRINGS = {
         noApprovedProduct: 'Für diesen Symptompfad ist derzeit kein klinisch und rechtlich zugelassenes Produkt freigeschaltet. Bitte suchen Sie eine Klinik, einen Arzt oder eine Apotheke auf.',
         allBlocked: 'Die verfügbaren zugelassenen Produkte haben nicht alle Sicherheitsprüfungen bestanden. Bitte suchen Sie eine Klinik, einen Arzt oder eine Apotheke auf.',
         ageOutsideRange: 'Die zugelassenen Produkte für dieses Symptom passen zu einer anderen Altersgruppe als dem von Ihnen angegebenen Alter. Bitte suchen Sie eine Klinik, einen Arzt oder eine Apotheke auf.',
+        pathwayNotServiced: 'Dieses Gerät bietet für dieses Symptom noch keinen unterstützten Selbstbehandlungspfad an, daher sollte eine Apothekerin oder ein Arzt es beurteilen. Bitte suchen Sie eine Klinik, einen Arzt oder eine Apotheke auf.',
+        symptomTooLong: 'Sie haben dieses Symptom länger, als für diese Produkte zur Selbstbehandlung zugelassen ist. Eine Einnahme jetzt könnte eine Erkrankung verdecken, die abgeklärt werden muss. Bitte suchen Sie eine Klinik, einen Arzt oder eine Apotheke auf.',
         eligible: 'Ein zugelassenes Produkt passt zur abgeschlossenen Sicherheitsprüfung. Prüfen Sie die Produktinformationen, bevor Sie fortfahren.',
       },
       strength: 'Stärke',
@@ -683,10 +695,15 @@ export function translateWorkflowMessage(message, lang) {
 export function localizeScreen(screen, lang) {
   if (!screen || typeof screen !== 'object') return screen;
   const questionId = screen.question_id;
+  // Clinical screening lists are pathway-specific, so a German customer must get
+  // the same red flags as an English one instead of the generic fallback.
+  const pathwaySubtitle = screen.pathway_code
+    ? tn(`question.${questionId}.${screen.pathway_code}.subtitle`, lang, null)
+    : null;
   return {
     ...screen,
     title: tn(`question.${questionId}.title`, lang, screen.title),
-    subtitle: tn(`question.${questionId}.subtitle`, lang, screen.subtitle),
+    subtitle: pathwaySubtitle ?? tn(`question.${questionId}.subtitle`, lang, screen.subtitle),
     placeholder: tn(`question.${questionId}.placeholder`, lang, screen.placeholder),
     error: screen.error ? translateWorkflowMessage(screen.error, lang) : null,
     options: (screen.options || []).map(option => ({
@@ -711,6 +728,8 @@ const REASON_MESSAGE_KEYS = {
   no_approved_product_for_pathway: 'result.message.noApprovedProduct',
   all_products_blocked: 'result.message.allBlocked',
   age_outside_supported_range: 'result.message.ageOutsideRange',
+  pathway_not_serviced: 'result.message.pathwayNotServiced',
+  symptom_longer_than_product_allows: 'result.message.symptomTooLong',
   approved_product_match: 'result.message.eligible',
 };
 
