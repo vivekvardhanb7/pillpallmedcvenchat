@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#04100a">
+    <title>PILLPAL MedAssist Voice</title>
+    <script>
+      (() => {
+        try {
+          const stored = localStorage.getItem('pillpal-theme');
+          const theme = stored === 'light' || stored === 'dark'
+            ? stored
+            : matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+          document.documentElement.dataset.theme = theme;
+        } catch (_) {
+          document.documentElement.dataset.theme = 'dark';
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="kiosk-shell">
+      <header class="topbar">
+        <div class="brand-mark" aria-hidden="true">+</div>
+        <div class="brand-copy">
+          <p class="eyebrow" data-i18n="app.eyebrow">Smart medicine vending assistant</p>
+          <h1>PILLPAL <span>MedAssist</span></h1>
+        </div>
+        <div class="header-actions">
+          <div class="status-pill"><span class="status-dot" aria-hidden="true"></span> <span data-i18n="app.researchMode">Research mode</span></div>
+          <button id="themeToggle" class="icon-button theme-toggle" type="button" aria-label="Switch to light mode" data-i18n-aria-label="theme.switchToLight">
+            <span id="themeIcon" class="theme-icon" aria-hidden="true">☾</span><span id="themeLabel" class="button-label" data-i18n="theme.dark">Dark</span>
+          </button>
+          <button id="muteButton" class="icon-button" type="button" aria-pressed="false" aria-label="Mute voice" data-i18n-aria-label="voice.mute">
+            <span aria-hidden="true">◖))</span><span class="button-label" data-i18n="voice.on">Voice on</span>
+          </button>
+        </div>
+      </header>
+
+      <section class="voice-stage" aria-label="Voice assistant" data-i18n-aria-label="app.voiceAssistant">
+        <div class="ambient-orb" aria-hidden="true"></div>
+        <canvas id="visualizer" aria-hidden="true"></canvas>
+        <div class="voice-center">
+          <p id="voiceStatus" class="voice-status" data-i18n="voice.readyWhenYouAre">Ready when you are</p>
+          <button id="startButton" class="start-button" type="button">
+            <span class="start-icon" aria-hidden="true">●</span>
+            <span data-i18n="app.tapToStart">Tap to Start</span>
+          </button>
+          <button id="microphoneButton" class="microphone-button" type="button" hidden>
+            <span class="microphone-icon" aria-hidden="true">⌁</span>
+            <span id="microphoneLabel" data-i18n="app.tapToSpeak">Tap to speak</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <section class="interaction-column">
+          <nav id="progressIndicator" class="progress-indicator" aria-label="Assessment progress" data-i18n-aria-label="progress.aria">
+            <span data-stage="symptoms" data-i18n="progress.symptoms">Symptoms</span>
+            <span data-stage="safety" data-i18n="progress.safety">Safety</span>
+            <span data-stage="history" data-i18n="progress.history">Medical history</span>
+            <span data-stage="review" data-i18n="progress.review">Review</span>
+          </nav>
+
+          <section id="app" class="assessment" aria-live="polite">
+            <div class="welcome-card">
+              <p class="step-label" data-i18n="welcome.eyebrow">Voice + chat + touch</p>
+              <h2 data-i18n="welcome.title">Private, guided medicine screening</h2>
+              <p data-i18n="welcome.body">Tap the start button above. You can speak, type, or touch an option throughout the assessment.</p>
+            </div>
+          </section>
+
+          <section id="answerConfirmation" class="answer-confirmation" hidden aria-live="assertive">
+            <div>
+              <p class="eyebrow" data-i18n="confirm.eyebrow">Confirm your answer</p>
+              <p id="answerConfirmationText"></p>
+            </div>
+            <div class="confirmation-actions">
+              <button id="confirmAnswerButton" class="compact-primary" type="button" data-i18n="confirm.correct">Correct</button>
+              <button id="changeAnswerButton" class="compact-secondary" type="button" data-i18n="confirm.change">Change</button>
+            </div>
+          </section>
+
+          <form id="chatForm" class="chat-composer">
+            <button id="repeatQuestionButton" class="composer-icon" type="button" disabled aria-label="Repeat the question" data-i18n-aria-label="chat.repeat">↻</button>
+            <label class="sr-only" for="chatInput" data-i18n="chat.typeLabel">Type your answer</label>
+            <input id="chatInput" type="text" placeholder="Type your answer…" data-i18n-placeholder="chat.placeholderDefault" autocomplete="off" disabled>
+            <button id="sendChatButton" class="send-button" type="submit" disabled data-i18n="chat.send">Send</button>
+          </form>
+        </section>
+
+        <aside class="transcript-panel" aria-label="Live conversation transcript" data-i18n-aria-label="transcript.aria">
+          <div class="transcript-header">
+            <div>
+              <p class="eyebrow" data-i18n="transcript.live">Live transcript</p>
+              <h2 data-i18n="transcript.title">Conversation</h2>
+            </div>
+            <label class="language-control">
+              <span class="sr-only" data-i18n="language.label">Language</span>
+              <select id="languageSelect" class="language-select" aria-label="Language" data-i18n-aria-label="language.label">
+                <option value="en">EN</option>
+                <option value="de">DE</option>
+              </select>
+            </label>
+          </div>
+          <div id="transcript" class="transcript" role="log" aria-live="polite" aria-relevant="additions">
+            <p class="empty-transcript" data-i18n="transcript.empty">The conversation will appear here after you start.</p>
+          </div>
+          <p id="interimTranscript" class="interim-transcript" hidden></p>
+        </aside>
+      </section>
+
+      <footer>
+        <div class="footer-actions">
+          <button id="restartButton" class="text-button" type="button" disabled data-i18n="actions.startOver">Start over</button>
+          <button id="endSessionButton" class="text-button subtle" type="button" disabled data-i18n="actions.endSession">End session</button>
+        </div>
+        <span data-i18n="footer.note">Voice processing depends on browser support. No medicine is dispensed by this research version.</span>
+      </footer>
+    </main>
+
+    <div id="operatorBadge" class="operator-badge" role="status" aria-live="polite" hidden>
+      <p id="operatorBadgeText" class="operator-badge-text"></p>
+      <button id="operatorBadgeDismiss" class="operator-badge-dismiss" type="button" aria-label="Dismiss notice" data-i18n-aria-label="setup.dismiss">×</button>
+    </div>
+
+    <script src="./config.js"></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
+

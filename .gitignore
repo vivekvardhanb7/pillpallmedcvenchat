@@ -1,0 +1,16 @@
+# Local secrets and machine-specific state - never commit these.
+.env
+web/config.js
+node_modules/
+
+# Downloaded voices and the local Piper runtime (~100 MB, re-downloadable).
+tools/piper/
+
+# Scratch output: screenshots, cached TTS audio, exports.
+tmp/
+outputs/
+
+# Editor and OS noise.
+.DS_Store
+Thumbs.db
+*.log

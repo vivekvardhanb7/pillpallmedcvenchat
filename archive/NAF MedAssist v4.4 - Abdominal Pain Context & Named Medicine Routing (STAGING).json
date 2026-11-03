@@ -1,0 +1,1541 @@
+{
+  "name": "NAF MedAssist v4.4 - Abdominal Pain Context & Named Medicine Routing (STAGING)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "naf-medassist",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "f9f953b9-fad3-4c28-b802-26c6dff4e65e",
+      "name": "POST Unified MedAssist1",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -13744,
+        -17120
+      ],
+      "webhookId": "7899fd41-443d-4733-9ee6-80870e8e030f"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Abdominal complaints require a targeted interview, not a medicine-package name.\nconst x=$input.first().json;\nconst msg=String(x.message||'').toLowerCase();\nconst complaint=String(x.state?.complaint||'').toLowerCase();\nconst abdominal=/\\b(?:stomach pain|stomach ache|stomachache|stomach hurts|belly hurts|tummy hurts|abdominal pain|belly pain|tummy pain|pain in (?:my|the) (?:belly|stomach|abdomen))\\b/i.test(complaint+' '+msg);\nconst med=String(x.medicationName||'').trim().toLowerCase();\nconst norm=z=>String(z||'').toLowerCase().normalize('NFKC').replace(/[^a-z0-9]+/g,' ').trim();\nconst explicitlyNamed=med.length>=3 && (norm(msg).includes(norm(med))||norm(complaint).includes(norm(med)));\n// Symptom-only questions continue the complaint interview even if Gemini invented a medicine candidate.\nconst useAbdomen=abdominal && !explicitlyNamed && !x.emergency && !x.urgent && !['URGENT','EMERGENCY'].includes(x.output?.disposition) && !x.OTCEducationAvailable;\nreturn [{json:{...x,abdominalFollowUpNeeded:useAbdomen}}];"
+      },
+      "id": "b00b11e5-1dde-4d51-8bb4-cc363fc306ff",
+      "name": "Identify Abdominal Pain Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -10704,
+        -17024
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "abdominal-path-44",
+              "leftValue": "={{ $json.abdominalFollowUpNeeded === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "0799adaa-7b25-45c0-ab2e-5afbb0583213",
+      "name": "Needs Abdominal Pain Interview?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -10480,
+        -17024
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Evidence-based, conservative abdominal-pain interview for the staging kiosk.\n// Never infer a diagnosis or recommend tablets for unidentified abdominal pain.\nconst x=$input.first().json;\nconst db=$getWorkflowStaticData('global');if(!db.medassistSessions)db.medassistSessions={};\nconst s=db.medassistSessions[x.sessionId];\nconst a=s?.known?.abdominal||{};\nlet question=null, options=[];\nif(!a.location){question='Where exactly is the stomach pain?';options=['Upper abdomen','Lower right','Lower left','Around my belly button','All over','Not sure'];}\nelse if(!a.duration){question='How long have you had the pain?';options=['Since today','Since yesterday','Several days','Not sure'];}\nelse if(!a.severity){question='How strong is the pain on a scale of 0 to 10?';options=['Mild (1-3/10)','Moderate (4-6/10)','Severe (7-10/10)'];}\nelse if(s && !s.known.abdomenWarningAsked){question='Are you also having fever, persistent vomiting, bloody or black stool, or significant worsening?';options=['No other symptoms','Fever','Persistent vomiting','Getting worse'];s.known.abdomenWarningAsked=true;}\n// Do not repeat the same question; do not create a fake resolved state.\nconst norm=v=>String(v||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();\nif(question && (s?.asked||[]).some(v=>norm(v)===norm(question))){\n  // If an essential unanswered question was skipped in favor of 'which tablet?',\n  // explain why that fact is necessary and ask it once more in a different form.\n  const asksForMedicine=/\\b(?:medicine|medicines|medication|tablet|pill|painkiller|what should i take|what can i take)\\b/i.test(String(x.message||''));\n  if(!a.location && asksForMedicine && !(s?.asked||[]).some(v=>norm(v).includes('before choosing a medicine'))){\n    question='Before choosing a medicine, is the pain in the upper belly, lower right, around the navel, or all over?';\n    options=['Upper abdomen','Lower right','Lower left','Around my belly button','All over','Not sure'];\n  } else { question=null;options=[]; }\n}\nlet intro='Stomach pain may come from indigestion, trapped wind, or other conditions. I can help identify which pharmacy options may be relevant once we know more about the pain.';\nif(a.location==='UPPER' && (a.burning===true || /\\b(?:heartburn|burning|acid reflux|sour taste)\\b/i.test(String(x.message||'')+' '+String(s?.complaint||'')))){\n intro='For upper-abdominal burning or reflux-like discomfort, antacids or alginates are common pharmacy options, but other causes are possible and your suitability is not yet verified.';\n}else if(a.location==='LOWER_RIGHT'){\n intro='Pain in the lower-right abdomen needs particular care. If it is worsening, persistent, or accompanied by fever or vomiting, seek prompt medical assessment rather than choosing tablets.';\n}else if(a.location && a.severity==='MILD'){\n intro='Mild abdominal pain can sometimes improve with rest and fluids, but I cannot safely pick a tablet until its likely cause and risk factors are clearer.';\n}\nlet reply=intro;\nif(question)reply+='\\n\\n'+question;\nelse reply+='\\n\\nIf pain persists, worsens or the cause remains unclear, seek advice from a clinician or pharmacist rather than choosing a tablet at random.';\nreply+='\\n\\nGet urgent medical help for sudden severe pain, vomiting blood, black sticky stools, fainting, or a rigid abdomen.';\nif(s){if(question){s.asked=[...(s.asked||[]),question].slice(-20);s.lastQuestion=question;s.questionCount=(s.questionCount||0)+1;}else{s.lastQuestion=null;}s.updatedAt=Date.now();db.medassistSessions[x.sessionId]=s;}\nreturn [{json:{reply,speakText:reply.replace(/\\s*\\n+\\s*/g,' ').trim(),stage:'ABDOMINAL_PAIN_TRIAGE',disposition:'INFORMATION',sessionId:x.sessionId,channel:x.channel,firstAid:{immediateActions:['Sip water if you can keep fluids down.'],avoid:['Do not start an unverified painkiller for unexplained abdominal pain.'],warningSigns:['Sudden severe or worsening pain','Vomiting blood or black sticky stools','Fainting or rigid abdomen']},medication:{status:'NOT_EVALUATED',options:[],personalizedRecommendation:false,doseAuthorized:false},followUp:{required:!!question,question,options},sources:[{title:'NHS Stomach ache guidance',url:'https://www.nhs.uk/symptoms/stomach-ache/'}],requiresReview:false,ui:{view:'INFORMATION',heading:'Understanding stomach pain'},demoOnly:true}}];"
+      },
+      "id": "6b370fb9-cc36-46a3-bf16-3cf52b3bd1bf",
+      "name": "Guided Abdominal Pain Interview",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -7792,
+        -17600
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "symptom-firstaid-gate-36",
+              "leftValue": "={{ $json.OTCEducationAvailable === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Supported Symptom Education Topic?3",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -10256,
+        -16928
+      ],
+      "id": "18ddefb0-2a6e-4812-a75a-bfcf9c109145"
+    },
+    {
+      "parameters": {
+        "jsCode": "// v4.0 Evidence-led symptom-first educational catalog. NOT a personal tablet or dose approval.\n// Official sources are shown, with a pharmacy safety handoff for contraindications.\nconst x=$input.first().json;\nconst store=$getWorkflowStaticData('global');if(!store.medassistSessions||typeof store.medassistSessions!=='object')store.medassistSessions={};const s=store.medassistSessions[x.sessionId]||null;\nconst age=s && s.age!==null && s.age!==undefined && Number.isFinite(Number(s.age))?Number(s.age):null;\nconst ageBand=s?.ageBand||null;const ageKnown=(age!==null)||!!ageBand;\nconst child=ageBand==='UNDER_18'||(age!==null && age<18)||['child','baby','son','daughter','toddler'].includes(s?.patient);\nconst pregnant=s?.known?.pregnancy==='REPORTED'||/\\b(?:pregnant|pregnancy)\\b/i.test(String(s?.complaint||'')+' '+String(x.message||''));\nconst warfarin=Array.isArray(s?.medications)&&s.medications.includes('warfarin');\nconst allergies=Array.isArray(s?.known?.allergies)?s.known.allergies:[];\nconst conditions=Array.isArray(s?.conditions)?s.conditions:[];\nconst make=(intro,example,care,caution,warnings,sources,options)=>({intro,example,care,caution,warnings,sources,options});\nconst cat={\n HEADACHE:make('For a mild headache, common pharmacy pain-relief options include paracetamol; ibuprofen is another option for some adults.','paracetamol, ibuprofen','Rest, drink normally, eat if you have missed meals, and take screen breaks.','These are examples, not a confirmation they are safe for you. Ibuprofen may be unsuitable with ulcers, kidney disease, blood thinners or pregnancy; paracetamol also needs checking for liver disease or other medicines containing it.','Seek urgent help for an extremely severe sudden-onset headache, confusion, weakness, fever with stiff neck, or new vision changes.',[{title:'NICE headache guidance',url:'https://www.nice.org.uk/guidance/cg150/chapter/Recommendations'},{title:'NHS tension headache advice',url:'https://www.nhs.uk/conditions/tension-headaches/'}],['paracetamol','ibuprofen']),\n DIARRHEA:make('For watery diarrhea, start with oral rehydration salts (ORS) from a pharmacy.','ORS; loperamide only for some adults after appropriate checks','Mix ORS with safe drinking water exactly as the sachet says and sip regularly.','Loperamide can sometimes relieve short-term watery diarrhea in adults, but may be unsuitable with blood in stool, fever, severe pain or diarrhea after antibiotics. No personal dose is approved here.','Get medical help for bloody stools, fainting, very little urine, severe pain or inability to keep fluids down.',[{title:'NHS diarrhoea and vomiting',url:'https://www.nhs.uk/conditions/diarrhoea-and-vomiting/'}],['ORS','loperamide']),\n SORE_THROAT:make('For an uncomplicated sore throat, paracetamol or, when suitable, ibuprofen are common options for pain.','paracetamol, ibuprofen, medicated lozenges','Keep drinking fluids; some adults find medicated lozenges give modest temporary relief.','Do not assume antibiotics are needed. Pain medicines require checks for age, pregnancy, other medicines and relevant conditions.','Seek urgent help for difficulty breathing, inability to swallow saliva, or rapidly increasing throat swelling.',[{title:'NICE acute sore throat self-care',url:'https://www.nice.org.uk/guidance/ng84/chapter/Recommendations'}],['paracetamol','ibuprofen','medicated lozenges']),\n ALLERGIC_RHINITIS:make('For typical hay fever, common nonprescription options include antihistamines such as cetirizine or loratadine.','cetirizine, loratadine','Try reducing exposure to pollen; saline nasal rinses may also help.','These medicines may not suit everyone. Check other medicines, pregnancy, kidney problems and whether the product causes drowsiness.','Trouble breathing or swelling of the tongue or throat needs emergency help.',[{title:'NHS hay fever',url:'https://www.nhs.uk/conditions/hay-fever/'}],['cetirizine','loratadine']),\n HEARTBURN:make('For typical mild heartburn, pharmacists commonly recommend an antacid or an alginate product.','antacids, alginates','Try smaller meals and avoid lying down soon after eating.','Antacids can affect the absorption of other medicines. Chest pain or pressure must never be assumed to be simple reflux.','Seek urgent help for new chest pressure, severe pain, fainting, black stools or vomiting blood.',[{title:'NHS heartburn and acid reflux',url:'https://www.nhs.uk/conditions/heartburn-and-acid-reflux/'}],['antacid','alginate']),\n CONSTIPATION:make('For uncomplicated constipation, fibre products and osmotic laxatives such as macrogol are common pharmacy options.','bulk-forming fibre, macrogol','Drink adequate fluids and increase activity and fibre gradually if appropriate.','Laxatives are not suitable for some bowel problems; do not self-treat severe abdominal pain, vomiting or possible obstruction.','Seek medical review for severe pain, vomiting, bloody stool or persistent bowel changes.',[{title:'NHS laxatives',url:'https://www.nhs.uk/medicines/laxatives/'}],['bulk-forming fibre','macrogol']),\n PERIOD_PAIN:make('For ordinary period cramps, pharmacy pain relief may include ibuprofen or paracetamol when suitable.','ibuprofen, paracetamol','A warm compress can help with cramps.','Severe new pain, possible pregnancy, heavy bleeding, ulcers, kidney problems and other medicines change what is appropriate.','Seek urgent help for fainting, severe one-sided pain or possible pregnancy with significant pain or bleeding.',[{title:'NHS period pain',url:'https://www.nhs.uk/conditions/period-pain/'}],['ibuprofen','paracetamol']),\n BACK_PAIN:make('For mild back pain, an anti-inflammatory option such as ibuprofen is sometimes used, if medically suitable.','ibuprofen','Gentle movement and suitable warmth can help; avoid prolonged bed rest.','Anti-inflammatory tablets are not appropriate for everyone, particularly with blood thinners, kidney disease, ulcers or pregnancy.','Seek urgent help for new bladder or bowel problems, numbness around the genitals or progressive leg weakness.',[{title:'NHS back pain',url:'https://www.nhs.uk/conditions/back-pain/'}],['ibuprofen']),\n TOOTHACHE:make('For toothache, common temporary pain-relief options include paracetamol or ibuprofen when suitable.','paracetamol, ibuprofen','Arrange a dental assessment because tablets do not treat the cause.','Check age, allergies, other medicines and health conditions before choosing a product.','Urgent dental help is needed for facial swelling, fever, spreading infection or difficulty swallowing.',[{title:'NHS toothache',url:'https://www.nhs.uk/conditions/toothache/'}],['paracetamol','ibuprofen']),\n MINOR_CUT:make('For a small cut, cleaning the wound and covering it are usually more important than taking a tablet.','clean dressing; paracetamol only if pain relief is needed and suitable','Rinse with clean running water, apply gentle pressure if bleeding, and cover with a clean dressing.','If pain relief is needed, paracetamol is a common option but still needs product and patient checks.','Get medical help for deep wounds, uncontrolled bleeding, infection signs or a dirty wound with uncertain tetanus protection.',[{title:'NHS cuts and grazes',url:'https://www.nhs.uk/conditions/cuts-and-grazes/'}],['wound dressing','paracetamol']),\n COLD:make('For a blocked nose with a common cold, a saline nasal spray is a simple pharmacy option.','saline nasal spray','Rest and drink fluids; use a humidified environment if helpful.','Decongestants have restrictions with some heart conditions, high blood pressure, pregnancy and other medicines.','Seek review for difficulty breathing, chest pain, very high fever or significant worsening.',[{title:'NHS common cold',url:'https://www.nhs.uk/conditions/common-cold/'}],['saline nasal spray']),\n COUGH:make('For a mild cough, fluids and honey can soothe the throat for people older than one year.','honey (not under 1 year); pharmacist-selected cough preparation if appropriate','Rest and drink fluids.','The right cough medicine, if any, depends on age, underlying conditions, current medicines and the cough type.','Seek urgent help for breathlessness, chest pain, coughing blood or severe deterioration.',[{title:'NHS cough',url:'https://www.nhs.uk/conditions/cough/'}],['supportive care'])\n};\nlet a=cat[x.OTCEducationTopic];\nif(!a){a=make('For this symptom, start with safe self-care and supportive comfort measures.','supportive care','Rest and drink adequate fluids.','These measures are general self-care advice. Check with a pharmacist or clinician before taking any medicine to ensure it is suitable for you.','Seek prompt medical attention if symptoms become severe, persist, or you develop warning signs.',[],[]);}\n// High-risk patient context overrides any otherwise routine OTC suggestion.\nlet caution=a.caution;\nif(warfarin && a.options.some(v=>/\\b(?:ibuprofen|antacid)\\b/.test(v))){\n caution='Because warfarin is recorded, do not start ibuprofen or another NSAID without prescriber/pharmacist review. Other pain medicines may also interact and need checking. '+caution;\n}\nif(child){\n caution='This concerns someone under 18. Adult tablet choices and formulations cannot be assumed suitable; use age-appropriate care with a pharmacist or clinician. '+caution;\n}\nif(pregnant){\n caution='Pregnancy was mentioned. OTC product choice requires pregnancy-specific review before use. '+caution;\n}\nlet reply=a.intro+' '+a.care+'\\n\\n'+caution+' '+a.warnings;\nconst contraindicationRisk=warfarin||pregnant||allergies.some(v=>a.options.includes(v))||conditions.some(v=>['kidney disease','liver disease','ulcer'].includes(v));\nif(contraindicationRisk && x.OTCEducationTopic!=='DIARRHEA' && x.OTCEducationTopic!=='MINOR_CUT' && x.OTCEducationTopic!=='COLD' && x.OTCEducationTopic!=='COUGH'){\n reply='Because you reported a medicine-related risk (such as pregnancy, an allergy, a relevant medical condition or blood-thinner use), please get a pharmacist to check an appropriate product before choosing tablets. '+a.care+'\\n\\n'+a.warnings;\n}\nif(child){\n reply=(x.OTCEducationTopic==='DIARRHEA'?'For a child with diarrhea, offer suitable ORS prepared exactly as labeled and seek care if dehydration is possible.':x.OTCEducationTopic==='COLD'?'For a child with a blocked nose, a suitable saline nasal spray may help; check the age labeling. Avoid adult cold tablets.':'For a child, medicine choice and formulation need age-appropriate professional advice; start with suitable non-medicine comfort measures.')+' '+a.care+'\\n\\n'+a.warnings;\n}\nconst ambiguousSudden=x.OTCEducationTopic==='HEADACHE' && /\\b(?:sudden|suddenly|abruptly)\\b/i.test(String(x.message||'')) && !/\\b(?:severe|extreme|worst|thunderclap)\\b/i.test(String(x.message||''));\nif(ambiguousSudden){\n reply='A headache that reaches its worst intensity within a few minutes can be an emergency. If it was extremely severe or you have weakness, confusion or new vision loss, call emergency services. We should clarify the onset before discussing a tablet.';\n}\n// Ask a targeted question only when it helps, never recycle it each turn.\nlet q=null; let qOptions=[];\nif(s){\n const asked=(s.asked||[]).map(z=>String(z).toLowerCase());\n if(ambiguousSudden && !asked.some(z=>z.includes('maximum intensity'))){q='Did the headache reach its worst intensity within about five minutes?'; qOptions=['Yes, within 5 minutes','No, built up gradually'];}\n else if(!ageKnown && !asked.some(z=>z.includes('how old'))){q='How old is the person who needs the medicine?'; qOptions=['Under 18','Adult (18-64)','65 or older'];}\n else if(ageKnown && !asked.some(z=>z.includes('regular medicines'))){q=(s.patient==='self'?'Do you take any regular medicines or have medicine allergies?':'Does this person take any regular medicines or have medicine allergies?'); qOptions=['No medicines or allergies','I take blood thinners','I have medicine allergies'];}\n if(q){s.asked=[...(s.asked||[]),q].slice(-15);s.lastQuestion=q;s.questionCount=(s.questionCount||0)+1;}\n else s.lastQuestion=null;\n s.updatedAt=Date.now();store.medassistSessions[x.sessionId]=s;\n}\nif(q && !reply.includes(q))reply+='\\n\\n'+q;\nreturn [{json:{reply,speakText:reply.replace(/\\s*\\n+\\s*/g,' ').trim(),stage:'OTC_OPTIONS_EDUCATION',disposition:'INFORMATION',sessionId:x.sessionId,channel:x.channel,firstAid:{immediateActions:[a.care],avoid:[caution],warningSigns:[a.warnings]},medication:{status:'EDUCATIONAL_OPTIONS_ONLY',possibleOptions:(child||ambiguousSudden||contraindicationRisk)?[]:a.options,doseAuthorized:false,personalizedRecommendation:false,interactionChecked:false,GermanProductAuthorizationChecked:false},followUp:{required:!!q,question:q,options:qOptions.length?qOptions:a.options},sources:a.sources,requiresReview:false,demoOnly:true}}];\n"
+      },
+      "name": "Symptom-First OTC Education and Safety3",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -7792,
+        -17408
+      ],
+      "id": "d1b032ae-0cb3-48ae-9043-0ce6f9581e1f"
+    },
+    {
+      "parameters": {
+        "jsCode": "// No AI-suggested drug can be personalized at this stage. These are *educational*\n// OTC topic references derived from published NHS/NICE self-care recommendations.\n// Germany-local authorization, contraindications and patient suitability are NOT checked.\nconst x=$input.first().json;\nconst current=String(x.message||'').toLowerCase();const history=String(x.state?.complaint||'').toLowerCase();const t=current+' '+history;\nconst drugName=String(x.medicationName||'').toLowerCase().normalize('NFKC');\nconst msg=String(x.message||'').toLowerCase().normalize('NFKC');\nconst namedOnTurn=drugName.length>=3&&msg.includes(drugName);\nconst personalNamedRequest=namedOnTurn && ['DOSAGE','SUITABILITY','COMPARISON'].includes(x.medicationIntent);\nconst genericNamedInfo=namedOnTurn && x.medicationIntent==='GENERAL_INFO';\nconst tests=[\n ['HEADACHE',/\\b(?:headache|head pain|head hurts|tension headache|migraine)\\b/],\n ['DIARRHEA',/\\b(?:diarrh(?:ea|oea)|loose motions?|loose stools?|watery stools?|runny stools?)\\b/],\n ['SORE_THROAT',/\\b(?:sore throat|throat (?:hurts|pain|is sore)|painful swallowing)\\b/],\n ['ALLERGIC_RHINITIS',/\\b(?:hay fever|seasonal allerg(?:y|ies)|pollen allergy|sneez(?:e|ing) with (?:itchy|runny)|itchy eyes.*sneez)\\b/],\n ['HEARTBURN',/\\b(?:heartburn|acid reflux|acid indigestion|sour taste after eating)\\b/],\n ['CONSTIPATION',/\\b(?:constipat(?:ed|ion)|hard stools?|cannot poo|can't poop)\\b/],\n ['PERIOD_PAIN',/\\b(?:period cramps?|menstrual cramps?|period pain)\\b/],\n ['BACK_PAIN',/\\b(?:mild back pain|lower back pain|backache|back hurts)\\b/],\n ['TOOTHACHE',/\\b(?:toothache|tooth pain|tooth hurts)\\b/],\n ['MINOR_CUT',/\\b(?:paper cut|small cut|minor cut|scraped (?:my |his |her )?(?:skin|finger|knee)|minor scrape)\\b/],\n ['COLD',/\\b(?:common cold|blocked nose|stuffy nose|runny nose|nasal congestion)\\b/],\n ['COUGH',/\\b(?:mild cough|dry cough|coughing|cough)\\b/]\n];\nlet topic=null;\nfor(const source of [current,history]){for(const [key,re] of tests){if(re.test(source)){topic=key;break;}}if(topic)break;}\n// Ambiguous abdominal pain needs assessment; it must NOT be treated as indigestion.\nconst ambiguousAbdomen=/\\b(?:stomach pain|abdominal pain|tummy pain|severe belly pain)\\b/.test(t);\nif(ambiguousAbdomen && !/\\b(?:heartburn|reflux)\\b/.test(t)) topic=null;\n// A specifically named medicine/dose inquiry goes through CIMA and fail-closed checks.\nif(personalNamedRequest||genericNamedInfo)topic=null;\n// Protocols here are examples of common treatments, never clinical authorization.\nreturn [{json:{...x,OTCEducationAvailable:!!topic && !x.emergency && !x.urgent && !['EMERGENCY','URGENT'].includes(x.output?.disposition),OTCEducationTopic:topic,OTCNamedMedicineRequest:personalNamedRequest}}];\n"
+      },
+      "name": "Identify Evidence-Led Symptom Options3",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "id": "20e56fe4-3349-42d1-b532-382e8d8dbfea",
+      "position": [
+        -10928,
+        -17024
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw=$input.first().json;\nconst b=raw.body && typeof raw.body==='object' && !Array.isArray(raw.body)?raw.body:raw;\nconst channel=b.channel==='voice'?'voice':'chat';\nconst action=String(b.action||'').trim().toUpperCase();\nconst optionLabels={AGE_UNDER_18:'Under 18',AGE_ADULT_18_64:'Adult (18-64)',AGE_65_PLUS:'65 or older',adult_18_64:'Adult (18-64)',under_18:'Under 18',age_65_plus:'65 or older'};\nconst rawMessage=typeof b.message==='string'?b.message.trim():'';\nconst selected=typeof b.optionValue==='string'?b.optionValue.trim():typeof b.selectedOption==='string'?b.selectedOption.trim():'';\nconst message=rawMessage || optionLabels[selected] || selected;\n// A button answer is NOT a reset, even if an old frontend accidentally sends reset:true.\n// Explicit reset: action=RESET, or reset:true with no message/option.\nconst reset=action==='RESET'||(b.reset===true&&!message);\nconst valid=typeof b.sessionId==='string' && /^[a-zA-Z0-9_-]{16,100}$/.test(b.sessionId) && (reset||(message.length>=1&&message.length<=3000));\nreturn [{json:{valid,message,sessionId:valid?b.sessionId:'',channel,reset,locale:typeof b.locale==='string'?b.locale.slice(0,12):'en',selectedOption:selected||null,resetIgnoredForAnswer:b.reset===true&&!reset,action,error:valid?'':'Require a stable random sessionId (16-100 characters) and a message/optionValue (1-3000 characters), or an explicit reset request.'}}];"
+      },
+      "id": "aae03d70-03e5-4777-9446-4fc86d9bc10a",
+      "name": "Validate & Normalize6",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -13520,
+        -17120
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "aec5a1de-195b-4477-b45e-cafc48037a8a",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b8a6f348-f486-4adf-84f5-30cd3f1ba64c",
+      "name": "Valid Input?8",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -13296,
+        -17120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{json:{error:'INVALID_REQUEST',message:$input.first().json.error}}];"
+      },
+      "id": "f785b6c6-b56a-46a9-a1d8-96159c8577f7",
+      "name": "Validation Error6",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -13072,
+        -17216
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "e75a4aa0-8d4e-49a7-812c-664678b2c0be",
+      "name": "Respond 407",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -12848,
+        -17216
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ \"Customer: \" + $(\"Session Safety State5\").first().json.message + \"\\nLocale: \" + $(\"Session Safety State5\").first().json.locale + \"\\nDeployment: Germany; Spain CIMA is a reference only\\nPatient-state: \" + JSON.stringify($(\"Session Safety State5\").first().json.state) }}",
+        "options": {
+          "systemMessage": "You are NAF MedAssist, a European-facing medical-information and first-aid assistant in a vending machine. Your customer typically wants help choosing what to ask a pharmacist for, not just generic advice. Answer the customer's question first. For ordinary low-risk symptoms, mention a reasonable common pharmacy treatment or OTC category when supported by established guidelines, with a clear statement that this is educational and not a verified personal approval. Do NOT invent a dosing schedule, number of tablets, personal eligibility, drug interaction, product availability or German legal OTC status. An independent symptom education module may replace your text for a small set of checked common complaints; for all other symptoms, explain immediate first aid and necessary evaluation. Do not invent treatments for unusual or insufficiently described conditions.\n\nHeadache example: a mild headache since yesterday without specified red flags is not intrinsically URGENT. Generic education can mention paracetamol and, in some adults, ibuprofen, with screening for age, other medicines, pregnancy and major medical conditions. The word 'suddenly' alone is not evidence of thunderclap; if unclear, ask whether it reached peak intensity within five minutes. If an extremely severe abrupt-onset headache or neurological deficit is clear, escalate immediately. For watery diarrhea, explain oral rehydration salts (ORS) promptly, and loperamide only as a potential option for selected adults after screening.\n\nDistinguish the patient (self/other person), current topic and direct generic 'what can I take' from explicit medicine requests like 'what is diclofenac', 'can I take paracetamol 500 mg' and dosage/frequency questions. Never demand a medicine package name when the patient is asking what might help a symptom. Remember known answers and ask at most one targeted routine question per reply. A broad question such as \"what is paracetamol used for\" is GENERAL_INFO, not a professional referral. Do not label the patient as requiring a clinician simply because a regulatory reference lookup yields multiple records. For exact ingredient identification, extract only medicine names actually mentioned by the customer or established in their prior messages. On an ongoing conversation, NEVER greet, introduce yourself again, or restart the consultation. A button option such as Adult (18-64), Under 18 or 65 or older is an answer to an age-group question, not a new health complaint. Keep the original complaint and acknowledge the age group; age band is not an exact age. Emergency screening overrides medicines. For serious danger signs instruct emergency services; do not delay with extra questions. If urgency is claimed by you, riskEvidence.quote MUST be a verbatim contiguous phrase of at least 7 characters from the patient's provided text, and riskEvidence.category MUST clearly identify the red flag. Never invent riskEvidence from generic symptoms, patient fears, or typical red flags they have not reported. You may describe warning signs separately without categorizing them as present.\n\nYou do not have access to current DE SmPC, EMA coverage, drug interaction service or clinical certification. Spain's CIMA is a registry reference, not proof of a German product's approval. Never claim that source lookup happened unless upstream structured data explicitly says so. Never assert a specific named medicine is safe for this user or recommend a personalized tablet count, strength or timing. Never direct purchase from the kiosk.\n\nAlways output ONLY one parsable JSON object with these keys: disposition: SELF_CARE|PROFESSIONAL_REVIEW|URGENT|EMERGENCY|UNRESOLVED|INFORMATION; reply: plain short text; immediateActions: string[]; avoid: string[]; warningSigns: string[]; followUpRequired: boolean; followUpQuestion: string|null; followUpOptions: string[]; riskEvidence: {quote: string|null, category: string|null}; medicineQuery: {intent: NONE|GENERAL_INFO|SUITABILITY|DOSAGE|COMPARISON, name: string|null, strength: string|null, formulation: string|null, intendedUse: string|null, cimaSearchTerm: string|null}. For medicineQuery.name identify only medicine expressly mentioned by the user or firmly established in the prior messages, not one that YOU suggested as an example. For symptom-first requests medicineQuery.intent is SUITABILITY and name:null. If followUpQuestion is asked, provide 2 to 4 concise suggested answer choices in followUpOptions (e.g. [\"Yes\", \"No\"]). For direct dosage questions classify DOSAGE and preserve user-provided exact drug/form/strength only. Use short natural conversational responses, one or two paragraphs, no generic scary escalation for ordinary mild symptoms. The assistant is not a prescriber, pharmacist, doctor, or autonomous dispenser.\n",
+          "maxIterations": 2,
+          "returnIntermediateSteps": false
+        }
+      },
+      "id": "29b96dcf-2635-4193-9aff-4ffcf2f5bd2a",
+      "name": "Gemini Universal Interview6",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [
+        -11952,
+        -16832
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-pro-latest",
+        "options": {}
+      },
+      "id": "7f868be7-8c8e-46f2-8223-126486d4ce9d",
+      "name": "Gemini 3.8 Flash6",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        -11952,
+        -16624
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "uD7oERyQHg8sHOUI",
+          "name": "NAF google APi"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $(\"Session Safety State5\").first().json.memorySessionKey }}",
+        "contextWindowLength": 20
+      },
+      "id": "720ff50d-4b1b-41c4-9eae-9458dfb81da8",
+      "name": "n8n Simple Memory6",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        -11824,
+        -16624
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const pre=$('Session Safety State5').first().json;\nconst raw=$input.first().json;let v=raw.output??raw.text??raw.response??'';let o={};\ntry{if(typeof v==='string')o=JSON.parse(v.trim().replace(/^```(?:json)?\\s*/i,'').replace(/```\\s*$/,'').trim());else if(v&&typeof v==='object')o=v;}catch(e){}\nconst storage=$getWorkflowStaticData('global');if(!storage.medassistSessions||typeof storage.medassistSessions!=='object')storage.medassistSessions={};const db=storage.medassistSessions,s=db[pre.sessionId];\nconst make=(reply,disposition='UNRESOLVED',opts={})=>({reply,speakText:reply,stage:opts.stage||'RESULT',disposition,firstAid:{immediateActions:[],avoid:[],warningSigns:[]},medication:{status:'NOT_VERIFIED',options:[]},followUp:{required:false,question:null},sessionId:pre.sessionId,channel:pre.channel,requiresReview:disposition!=='SELF_CARE'&&disposition!=='INFORMATION',demoOnly:true});\nif(s?.level==='EMERGENCY'){\nconst reply='A medical emergency was reported in this consultation. Call local emergency services immediately and follow the dispatcher instructions. Do not delay for a tablet.';return [{json:make(reply,'EMERGENCY',{stage:'EMERGENCY'})}];}\nif(s?.level==='URGENT'){\nconst reply='Your symptoms or medicine risks still need prompt professional review. Do not delay assessment to buy tablets. If symptoms become severe or you have new emergency warning signs, call emergency services.';return [{json:make(reply,'URGENT',{stage:'URGENT'})}];}\nconst valid=o&&typeof o==='object'&&!Array.isArray(o)&&typeof o.reply==='string'&&o.reply.length>=15&&o.reply.length<=3800&&['SELF_CARE','PROFESSIONAL_REVIEW','URGENT','EMERGENCY','UNRESOLVED','INFORMATION'].includes(o.disposition);\nif(!valid)return [{json:make('I cannot safely complete this assessment right now. If symptoms are severe or getting worse, seek urgent medical care. Otherwise, ask a pharmacist or clinician for help.')}];\nconst allText=[o.reply,...(Array.isArray(o.immediateActions)?o.immediateActions:[]),...(Array.isArray(o.avoid)?o.avoid:[]),...(Array.isArray(o.warningSigns)?o.warningSigns:[]),o.followUpQuestion||''].join(' ');\n// Prototype cannot make PERSONAL tablet schedules, eligibility assertions or purchases without verified label/reference/contraindication checks.\nconst unverifiedOTCSuggestion=/\\b(?:try|consider|recommend|use|take|start|buy|purchase|may\\s+help|could\\s+help)\\b[^.!?]{0,85}\\b(?:otc|over.the.counter|tablets?|pills?|capsules?|painkillers?|analgesics?|ibuprofen|paracetamol|acetaminophen|diclofenac|naproxen|aspirin)\\b|\\b(?:ibuprofen|paracetamol|acetaminophen|diclofenac|naproxen|aspirin)\\b[^.!?]{0,50}\\b(?:may|could|should|would)\\s+(?:help|be\\s+good|be\\s+appropriate)\\b/i;\nconst personalDose=/(?:\\b(?:take|give|swallow|start|use|consume|you can take|you should take)\\b.{0,75}\\b(?:\\d+(?:\\.\\d+)?\\s*(?:mg|g|mcg)|\\d+\\s*(?:tablets?|pills?|capsules?)|one|two|three|twice\\s+(?:a|per)\\s+day|every\\s+\\d+\\s+hours?|\\d+\\s+times\\s+(?:a|per)\\s+day)\\b)|\\b(?:\\d+\\s*(?:mg|tablets?|capsules?))\\b.{0,35}\\b(?:twice|daily|per day|each day|every day)\\b/i;\nconst endorsement=/\\b(?:it is (?:definitely |completely )?safe for you|you (?:can|should) (?:safely )?take|approved for you|this dose is safe for you|take this medicine|you need to take)\\b/i;\nif(unverifiedOTCSuggestion.test(allText)||personalDose.test(allText)||endorsement.test(allText)||/\\b(?:once|twice|three\\s+times|\\d+\\s+times)\\s*(?:a\\s+day|per\\s+day|daily)\\b/i.test(allText))return [{json:make('I can explain what a medicine is used for, but I cannot confirm that a particular tablet or dose is safe for you without verified product information and relevant health checks. Please check the exact package and ask a pharmacist or clinician for dosing advice.','PROFESSIONAL_REVIEW')}];\nlet disposition=o.disposition;\nif(disposition==='EMERGENCY')return [{json:make('These symptoms may be a medical emergency. Call local emergency services immediately. Do not delay for medicine or drive yourself.','EMERGENCY',{stage:'EMERGENCY'})}];\nif(disposition==='URGENT') return [{json:make('The symptoms described may require prompt medical assessment. Please seek urgent in-person advice rather than relying on a vending-machine tablet.','URGENT',{stage:'URGENT'})}];\nlet reply=o.reply.trim();let follow=typeof o.followUpQuestion==='string'?o.followUpQuestion.trim():null;\nconst repetitiveGreeting=/^(?:hello|hi|welcome)[,! .\\-]*(?:i (?:am|'m) naf medassist|this is naf medassist)[.!\\s]+/i;\nif(pre.state?.turn>1 && repetitiveGreeting.test(reply)){\n  reply=reply.replace(repetitiveGreeting,'').trim();\n  // A full reintroduction without any actual help is not a valid follow-up.\n  if(reply.length<30 || /^(?:how can i help|what symptoms|please tell me what symptoms)/i.test(reply)){\n    const prior=String(pre.state?.complaint||'');\n    reply=prior? 'I am continuing our conversation about '+prior+'. Please answer the last relevant question or describe what has changed.': 'I am continuing this consultation. Please describe what has changed or answer the last question.';\n  }\n}\n\nconst normal=x=>String(x||'').toLowerCase().normalize('NFKC').replace(/[^a-z0-9\\s]/g,' ').replace(/\\s+/g,' ').trim();\nconst isAgeQ=q=>/\\b(?:how old|your age|age of|his age|her age)\\b/i.test(q);\nconst answered=(q)=>isAgeQ(q)&&s?.age!==null&&s?.age!==undefined;\nconst duplicate=follow && ((s?.asked||[]).some(q=>normal(q)===normal(follow))||normal(s?.lastQuestion)===normal(follow));\nconst limit=s && s.questionCount>=2;\nif(follow && (answered(follow)||duplicate||limit||o.followUpRequired!==true)){\n const re=new RegExp(follow.replace(/[.*+?^${}()|[\\]\\\\]/g,'\\\\$&')+'\\\\s*$','i');reply=reply.replace(re,'').trim();\n follow=null;\n}\n// Some model replies ask known-age question but fail to return a followUpQuestion.\nif(s?.age!==null&&s?.age!==undefined)reply=reply.replace(/\\b(?:How old are you|What is your age|How old is (?:he|she|your (?:brother|sister|father|mother|child)))\\?\\s*/gi,'').trim();\nif(!reply || reply.length<15)reply='Please describe any new or worsening symptoms. I can explain safe first aid and when you should get professional care.';\nif(follow && s){s.asked=[...(s.asked||[]),follow].slice(-15);s.lastQuestion=follow;s.questionCount=(s.questionCount||0)+1;s.updatedAt=Date.now();db[pre.sessionId]=s;}\nelse if(s){s.lastQuestion=null;s.updatedAt=Date.now();db[pre.sessionId]=s;}\nconst list=key=>Array.isArray(o[key])?o[key].filter(x=>typeof x==='string').slice(0,4):[];\nconst aiOptions=Array.isArray(o.followUpOptions)?o.followUpOptions.filter(x=>typeof x==='string').slice(0,4):(Array.isArray(o.options)?o.options.filter(x=>typeof x==='string').slice(0,4):[]);\nreturn [{json:{reply,speakText:reply,stage:'RESULT',disposition,firstAid:{immediateActions:list('immediateActions'),avoid:list('avoid'),warningSigns:list('warningSigns')},medication:{status:'INFORMATION_ONLY',options:[]},followUp:{required:!!follow,question:follow,options:aiOptions},sessionId:pre.sessionId,channel:pre.channel,requiresReview:disposition==='PROFESSIONAL_REVIEW'||disposition==='UNRESOLVED',demoOnly:true}}];\n"
+      },
+      "id": "efac3caa-5e98-4b8d-b0e4-5f5f1ea30b58",
+      "name": "Validate AI & Limit Medication Claims6",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -7792,
+        -16448
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "a5b72016-cf8d-4e02-a169-22f3f521f0f8",
+      "name": "Respond 208",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -7344,
+        -17120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const x=$('Session Safety State5').first().json;const reply='The medical guidance service is unavailable. For severe or rapidly worsening symptoms seek urgent help; for medicine questions consult a pharmacist.';return [{json:{error:'AI_UNAVAILABLE',reply,speakText:reply,stage:'FALLBACK',disposition:'UNRESOLVED',sessionId:x.sessionId,channel:x.channel}}];"
+      },
+      "id": "0224397b-7358-45bc-a0a1-c9d2d5fbe27d",
+      "name": "AI Unavailable6",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -11600,
+        -16144
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 503
+        }
+      },
+      "id": "be3ba637-f143-43e8-94f3-e4d3fa15191d",
+      "name": "Respond 512",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -11376,
+        -16144
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// NAF MedAssist v3.1 - single-instance, temporary clinical state in n8n workflow static data.\n// n8n Simple Memory remains connected to Gemini. This structured guard complements,\n// but does not replace, durable transactional storage required for a scaled release.\nconst x=$input.first().json;\nconst storage=$getWorkflowStaticData('global');\nif (!storage.medassistSessions || typeof storage.medassistSessions!=='object') storage.medassistSessions={};\nconst db=storage.medassistSessions;\nconst now=Date.now(), ttl=25*60*1000;\nfor(const [k,v] of Object.entries(db)) if(!v || now-(v.updatedAt||0)>ttl) delete db[k];\nconst fresh=()=>({patient:'self',age:null,ageBand:null,medications:[],conditions:[],complaint:null,known:{},asked:[],lastQuestion:null,questionCount:0,level:'UNRESOLVED',emergencyReason:[],urgentReason:[],updatedAt:now,turn:0,memoryEpoch:`${now.toString(36)}-${Math.random().toString(36).slice(2,12)}`});\nif(x.reset){delete db[x.sessionId]; const cleared=fresh();return [{json:{...x,shortCircuit:'RESET',state:cleared,urgent:false,emergency:false,flags:[],memorySessionKey:`${x.sessionId}--${cleared.memoryEpoch}`}}];}\nlet s=db[x.sessionId]||fresh();if(!s.memoryEpoch)s.memoryEpoch=`${now.toString(36)}-${Math.random().toString(36).slice(2,12)}`;\nconst t=String(x.message||'').normalize('NFKC').toLowerCase().replace(/[\\u2013\\u2014]/g,'-').replace(/\\s+/g,' ').trim();\n// Recognize category buttons without inventing an exact age (adult 18-64 != age 18).\nconst choice=t.replace(/[.!]/g,'').trim();\nconst selectedCode=String(x.selectedOption||'').trim().toLowerCase();\nlet pickedAgeBand=null;\nif(/^(?:adult\\s*\\(?\\s*18\\s*[-]\\s*64\\s*\\)?|18\\s*[-]\\s*64|adult 18 to 64)$/.test(choice)||['age_adult_18_64','adult_18_64'].includes(selectedCode))pickedAgeBand='ADULT_18_64';\nelse if(/^(?:under\\s*18|below\\s*18|minor|child)$/.test(choice)||['age_under_18','under_18'].includes(selectedCode))pickedAgeBand='UNDER_18';\nelse if(/^(?:65\\s*(?:or|and)\\s*older|65\\+|over\\s*64|senior)$/.test(choice)||['age_65_plus','age_65_or_older'].includes(selectedCode))pickedAgeBand='AGE_65_PLUS';\nconst explicitAgeChoice=!!pickedAgeBand;\nif(explicitAgeChoice){\n s.ageBand=pickedAgeBand;\n s.known.ageBand=pickedAgeBand;\n // If a separately provided exact age contradicts the selected band, do not silently keep it.\n if(s.age!==null && s.age!==undefined &&\n   ((pickedAgeBand==='UNDER_18'&&s.age>=18)||(pickedAgeBand==='ADULT_18_64'&&(s.age<18||s.age>64))||(pickedAgeBand==='AGE_65_PLUS'&&s.age<65))){\n   s.age=null;delete s.known.age;\n }\n s.known.ageGroupButtonAnswered=true;\n}\n\n\nconst isNegated=(clause,pos)=>/(?:\\bno|\\bnot|\\bwithout|\\bnever|\\bdeny|\\bdenies|\\bdon't|\\bdoesn't|\\bdo not|\\bhave not|\\bhas not)\\s+(?:(?:any|new|severe|signs? of)\\s+){0,3}(?:\\w+\\s+){0,3}$/.test(clause.slice(Math.max(0,pos-48),pos));\nconst clauses=t.split(/[,;.!?]|\\bbut\\b|\\bhowever\\b/).filter(Boolean);\nconst present=re=>clauses.some(c=>{const m=re.exec(c);return m&&!isNegated(c,m.index);});\n// New complaint about someone else is not the previous customer's medical history.\nconst person=t.match(/\\b(?:my|our)\\s+(?:(?:\\d{1,3}[- ]?year[- ]old|young|older|younger)\\s+)?(father|mother|dad|mom|brother|sister|son|daughter|child|baby|toddler|wife|husband|friend)\\b/);\nif(person && s.patient!==person[1]) {s=fresh();s.patient=person[1];}\nelse if(/\\b(?:i have|i'm having|i am having|my (?:head|stomach|arm|leg|finger|shoulder|neck)|for me)\\b/.test(t) && s.patient!=='self' && !/\\b(?:he|she|his|her|him)\\b/.test(t)){s=fresh();s.patient='self';}\n// Preserve the active concern; a greeting must not become the patient complaint.\nconst healthMention=/\\b(?:headache|head pain|diarrh\\w*|loose stools?|stomach pain|stomach hurts|belly hurts|tummy hurts|abdomen|pain|fever|cold|cough|sore throat|allergy|sneez|heartburn|reflux|constipat\\w*|period cramps?|backache|back pain|toothache|paper cut|minor cut|red eye|breath|chest|warfarin|paracetamol|ibuprofen|diclofenac|swallowed|weak arm|blurred vision)\\b/i;\nif(healthMention.test(t) && (!s.complaint || /^(?:hi|hello|hey|good morning|good evening|i need help)[!., ]*$/i.test(s.complaint)))s.complaint=t.slice(0,220);\n\n// A new, explicit complaint takes precedence over the previous condition for symptom suggestions.\nif(/^(?:now|another (?:problem|question)|new (?:problem|symptom)|different (?:problem|issue)|i also have)\\b/i.test(t) && healthMention.test(t)){\n s.complaint=t.slice(0,220);s.asked=[];s.questionCount=0;s.lastQuestion=null;\n}\n// A clear new symptom in the same patient replaces old consultation topic, but not patient risk history.\nconst newTopic=t.match(/\\b(?:i have|i'm having|i am having|i've got|now i have)\\s+(?:a |an )?(headache|watery diarrh(?:ea|oea)|diarrh(?:ea|oea)|sore throat|toothache|cold|cough|heartburn|back pain)\\b/);\nif(newTopic && s.complaint && !s.complaint.includes(newTopic[1]) && !/\\b(?:stomach pain|stomachache|abdominal pain|belly pain|tummy pain)\\b/.test(t)){\n s.complaint=t.slice(0,220);s.asked=[];s.questionCount=0;s.lastQuestion=null;\n delete s.known.abdominal;delete s.known.rightLowerAbdomen;delete s.known.worsening;\n}\n// Conservative persistent risk facts. Unknown is not the same as denied.\nif(/\\b(?:i am pregnant|i'm pregnant|im pregnant|she is pregnant|patient is pregnant|pregnancy confirmed)\\b/i.test(t))s.known.pregnancy='REPORTED';\nconst allergy=t.match(/\\b(?:allergic to|allergy to)\\s+(paracetamol|acetaminophen|ibuprofen|aspirin|naproxen|diclofenac|penicillin)\\b/i);\nif(allergy){s.known.allergies=[...new Set([...(s.known.allergies||[]),allergy[1].toLowerCase()])];}\nfor(const [name,re] of [['kidney disease',/\\b(?:kidney disease|kidney failure|renal failure)\\b/i],['liver disease',/\\b(?:liver disease|liver failure|cirrhosis)\\b/i],['ulcer',/\\b(?:stomach ulcer|gastric ulcer|peptic ulcer)\\b/i]]){\n if(re.test(t) && !/\\b(?:no|not|without|never)\\s+(?:history of\\s+)?/.test(t.slice(Math.max(0,t.search(re)-18),t.search(re))))s.conditions=[...new Set([...(s.conditions||[]),name])];\n}\n// Age is attributed only to active patient, contextually. Never overwrite from dosage/pain scales.\nconst rel=person? t.match(/\\b(?:my|our)\\s+(?:father|mother|dad|mom|brother|sister|son|daughter|child|baby|toddler|wife|husband|friend)\\s+(?:is\\s+)?(\\d{1,3})\\s*(?:years?\\s*old|yo)?\\b/) : null;\nconst aged=t.match(/\\b(\\d{1,3})\\s*[- ]?years?[- ]old\\b/);\nconst selfAge=s.patient==='self'?t.match(/\\b(?:i am|i'm|im|age is|my age is)\\s*(\\d{1,3})(?!\\s*(?:mg|kg|\\/10|out of (?:10|ten)|minutes?|hours?|days?))\\b/):null;\nconst justNumber=s.lastQuestion&&/age|how old/i.test(s.lastQuestion)?t.match(/^(\\d{1,3})[. ]*$/):null;\nconst otherAge=s.patient!=='self'?t.match(/\\b(?:he|she|they)\\s+(?:is|are)\\s+(\\d{1,3})(?!\\s*(?:mg|kg|\\/10|hours?))\\b/):null;\nconst candidate=rel?.[1]||aged?.[1]||selfAge?.[1]||otherAge?.[1]||justNumber?.[1];\nif(candidate && +candidate>0 && +candidate<=120) {s.age=+candidate;s.known.age=+candidate;s.ageBand=s.age<18?'UNDER_18':s.age>=65?'AGE_65_PLUS':'ADULT_18_64';s.known.ageBand=s.ageBand;}\nif(/\\b(?:warfarin|blood thinner)\\b/.test(t)&&!present(/\\b(?:do not take|don't take|not taking)\\s+(?:warfarin|blood thinner)\\b/)) s.medications=[...new Set([...s.medications,'warfarin'])];\nif(/\\b(?:i (?:have|take)|i'm taking|taking|on)\\s+(?:other\\s+)?(?:no|none)\\s+(?:medicines?|medications?)\\b/.test(t)||choice==='no medicines or allergies')s.known.noMeds=true;\nif(choice==='no medicines or allergies')s.known.noMedicineAllergiesReported=true;\nif(choice==='i have medicine allergies')s.known.medicineAllergiesUnspecified=true;\nif(/^(?:dry cough|dry)$/.test(choice))s.known.coughType='DRY';\nelse if(/^(?:cough with mucus|with mucus|phlegm|wet cough|productive cough)$/.test(choice))s.known.coughType='WITH_MUCUS';\n\n// Sentence-level clinical signals. Negative statements are not positive findings.\nconst emergencyRules=[\n ['breathing',/\\b(?:can(?:not|'t) breathe|cannot get (?:enough|any) air|unable to (?:breathe|draw|take|get) (?:a |enough |any )?(?:breath|air)|struggl(?:e|ing) to breathe|gasping (?:for )?(?:air|breath)|blue lips|severe (?:breathing difficulty|shortness of breath)|suffocat(?:e|ing))\\b/],\n ['stroke',/\\b(?:slurred speech|can't speak properly|cannot speak properly|unable to speak normally|not able to talk normally|face droop(?:ing)?|one.sided (?:weakness|numbness)|(?:left|right) arm (?:is |feels )?weak|arm is weak|right arm is weak|sudden (?:weakness|numbness) on (?:one|the) side)\\b/],\n ['heart',/\\b(?:chest pressure|crushing chest|chest (?:pain|tightness)|pressure (?:in|on) (?:my|the) chest|heart attack)\\b/],\n ['bleeding',/\\b(?:bleeding (?:heavily|profusely|uncontrollably)|bleeding (?:won't|will not) stop|uncontrolled bleeding|massive blood loss)\\b/],\n ['unresponsive',/\\b(?:unresponsive|unconscious|can't wake|cannot wake|hard to wake|having a seizure|seizure (?:right now|today)|fainted and (?:won't|will not) wake)\\b/],\n ['anaphylaxis',/\\b(?:tongue (?:is )?swelling|swollen tongue|throat (?:is )?closing|throat swelling|severe allergic reaction)\\b/],\n ['poison',/\\b(?:overdos(?:e|ed)|swallowed bleach|drank poison|poisoned (?:myself|himself|herself)|took too many (?:tablets|pills|medicines)|swallowed (?:a |the )?(?:button battery|coin battery)|(?:child|baby|toddler) swallowed (?:a |the )?battery)\\b/],\n ['sudden_headache',/\\b(?:thunderclap headache|worst headache of my life|sudden(?:ly)? (?:extreme|severe|unbearable) headache|headache (?:peaked|reached (?:its )?worst) within (?:seconds|a minute|five minutes|5 minutes))\\b/]\n];\nconst urgentRules=[\n ['worsening_headache',/\\b(?:(?:severe|very bad|intense) (?:persistent |worsening )?headache|headache (?:is|getting) (?:very severe|much worse))\\b/],\n ['cauda_equina',/\\b(?:back pain.*(?:cannot urinate|can't urinate|numb(?:ness)? around (?:my|the) genitals|loss of bladder|loss of bowel)|new loss of (?:bladder|bowel) control)\\b/],\n ['possible_bowel_obstruction',/\\b(?:constipat\\w*.*(?:severe abdominal pain|vomiting)|severe abdominal pain.*(?:constipat\\w*|vomiting))\\b/],\n ['dental_spreading_infection',/\\b(?:toothache.*(?:face swelling|facial swelling|swollen face)|facial swelling.*toothache)\\b/],\n ['headache_meningeal',/\\b(?:headache.*fever.*stiff neck|fever.*stiff neck.*headache|stiff neck.*fever.*headache)\\b/],\n ['eye',/\\b(?:(?:my |the |his |her )?eye (?:is )?red.{0,55}(?:painful|hurts).{0,55}vision (?:is )?(?:blurry|blurred)|red eye (?:hurts|is painful).*vision (?:is )?(?:blurry|blurred)|painful red eye|red eye (?:and|with) (?:blurred|blurry|reduced) vision|eye pain (?:and|with) (?:blurry|blurred|reduced) vision|vision (?:is|has become) blurry.*red eye)\\b/],\n ['abdomen',/\\b(?:lower right|right lower|right side of (?:my|his|her|the) abdomen)\\b.{0,85}\\b(?:worsening|getting worse|keeps getting worse)|\\b(?:keeps getting worse|worsening|get(?:ting)? worse)\\b.{0,65}\\b(?:lower right|right lower)\\b/],\n ['bloody_diarrhea',/\\b(?:bloody (?:diarrh(?:ea|oea)|stool)|(?:stool|poop|feces|faeces)\\s+(?:is|looks)\\s+bloody|blood\\s+(?:in|with)\\s+(?:(?:my|his|her|the)\\s+)?(?:diarrh(?:ea|oea)|stools?|poop)|diarrh(?:ea|oea)\\s+with\\s+blood)\\b/],\n ['dehydration_risk',/\\b(?:severely dehydrated|severe dehydration|not peeing|not urinating|no urine|hardly urinating|very little urine|fainting from diarrhea|fainting from diarrhoea)\\b/],\n ['after_antibiotics',/\\b(?:diarrh(?:ea|oea)|loose stools?)\\b.{0,65}\\b(?:after(?:\\s+taking)?|while taking|on)\\s+antibiotics?\\b|\\b(?:after(?:\\s+taking)?|while taking|on)\\s+antibiotics?\\b.{0,65}\\b(?:diarrh(?:ea|oea)|loose stools?)\\b/],\n ['pregnancy_bleeding',/\\b(?:pregnan\\w*\\b.{0,40}\\b(?:bleeding|severe pain)|(?:bleeding|severe pain)\\b.{0,40}\\bpregnan\\w*)/]\n];\nconst educationalQuestion=/^(?:what (?:is|are|does)|how does|tell me about|explain (?:what|how))\\b/.test(t) && !/\\b(?:i|my|he|she|his|her|my father|my mother|my child)\\s+(?:have|has|am|is|feel|feels|cannot|can't)\\b/.test(t);\nconst flags=educationalQuestion?[]:emergencyRules.filter(([k,re])=>present(re)).map(([k])=>k);\nlet urgency=urgentRules.filter(([k,re])=>present(re)).map(([k])=>k);\nconst eyePainOrRed=present(/\\b(?:red\\s+eye|painful\\s+eye|eye\\s+(?:is\\s+)?red|eye\\s+(?:is\\s+)?painful|eye\\s+hurts)\\b/);\nconst newVisualChange=present(/\\b(?:blurred\\s+vision|blurry\\s+vision|vision\\s+(?:is\\s+)?(?:blurry|blurred)|reduced\\s+vision)\\b/);\nif(eyePainOrRed && newVisualChange)urgency.push('eye');\n// Higher-risk drug request: do not endorse diclofenac/NSAIDs when warfarin is reported.\nif(s.medications.includes('warfarin') && (/\\b(?:diclofenac|ibuprofen|naproxen|nsaid)\\b/.test(t)||(/\\b(?:diclofenac|ibuprofen|naproxen|nsaid)\\b/.test(s.complaint||'')&&/\\b(?:use it|take it|start it)\\b/.test(t))) && /\\b(?:can|take|use|start|okay|safe|suitable|pain|for)\\b/.test(t)) {s.known.medicineInteractionReview=true;}\n// RLQ worsening can be disclosed across separate turns (following other-person complaint).\nif(/\\b(?:lower right|right lower)\\b/.test(t)) s.known.rightLowerAbdomen=true;\nif(/\\b(?:keeps getting worse|getting worse|worsening)\\b/.test(t)) s.known.worsening=true;\nif(s.known.rightLowerAbdomen&&s.known.worsening && /stomach|abdomen|abdominal|pain/.test(s.complaint||'')) urgency.push('abdomen');\n// Abdominal pain context: ordinary symptom follow-ups must not be reinterpreted as a new complaint.\n// Only explicitly present symptoms count as warning signs. This is a narrow demo triage safeguard.\nconst abdominalActive=/\\b(?:stomach pain|stomach ache|stomachache|stomach hurts|belly hurts|tummy hurts|abdominal pain|belly pain|tummy pain|abdomen hurts|pain in (?:my|the) (?:stomach|belly|abdomen))\\b/i.test(String(s.complaint||''));\nif(abdominalActive){\n const abd= s.known.abdominal && typeof s.known.abdominal==='object' ? s.known.abdominal : {location:null,duration:null,severity:null};\n if(/\\b(?:lower right|right lower|bottom right|right side (?:of|in) (?:my|the) (?:stomach|belly|abdomen))\\b/.test(t))abd.location='LOWER_RIGHT';\n else if(/\\b(?:lower left|left lower|bottom left)\\b/.test(t))abd.location='LOWER_LEFT';\n else if(/\\b(?:upper (?:abdomen|stomach|belly)|upper middle|just below (?:my|the) ribs|top of (?:my|the) (?:stomach|belly))\\b/.test(t))abd.location='UPPER';\n else if(/\\b(?:around (?:my|the) (?:belly button|navel)|middle of (?:my|the) (?:stomach|belly)|centre of (?:my|the) (?:stomach|belly)|center of (?:my|the) (?:stomach|belly))\\b/.test(t))abd.location='CENTRAL';\n else if(/\\b(?:all over|everywhere|whole (?:stomach|belly))\\b/.test(t))abd.location='DIFFUSE';\n if(/\\b(?:since yesterday|yesterday)\\b/.test(t))abd.duration='SINCE_YESTERDAY';\n else if(/\\b(?:since (?:this )?morning|this morning|today|a few hours|for \\d+ hours?)\\b/.test(t))abd.duration='TODAY';\n else if(/\\b(?:for \\d+ days?|several days|for a week|over a week)\\b/.test(t))abd.duration='SEVERAL_DAYS';\n const scale=t.match(/\\b(10|[0-9])\\s*\\/\\s*10\\b/);\n if(scale)abd.severity=Number(scale[1])>=7?'SEVERE':Number(scale[1])>=4?'MODERATE':'MILD';\n else if(/\\b(?:very severe|severe pain|unbearable pain|excruciating|extreme pain)\\b/.test(t) && !/\\b(?:no|not|without)\\s+(?:very\\s+)?severe\\b/.test(t))abd.severity='SEVERE';\n else if(/\\b(?:mild pain|a mild ache|only mild|not severe|3\\/10|2\\/10|1\\/10)\\b/.test(t))abd.severity='MILD';\n if(/\\b(?:burning|acid reflux|heartburn|sour taste)\\b/.test(t))abd.burning=true;\n s.known.abdominal=abd;\n const bleeding=present(/\\b(?:vomit(?:ing|ed)? blood|blood in (?:my|the) vomit|vomit(?:ing)? (?:looks like )?coffee grounds|black (?:sticky|tarry) (?:stool|poo|poop)|bloody stool)\\b/);\n const abruptSevere=present(/\\b(?:sudden(?:ly)? (?:and )?severe (?:stomach|abdominal|belly|tummy) pain|(?:stomach|abdominal|belly|tummy) pain (?:is |was )?(?:sudden(?:ly)? and )?(?:extremely|very) severe|severe sudden (?:stomach|abdominal|belly) pain)\\b/);\n if(bleeding) flags.push('abdominal_bleeding');\n if(abruptSevere)flags.push('severe_abdominal_pain');\n if(s.known.pregnancy==='REPORTED')urgency.push('pregnancy_abdominal_pain');\n if(present(/\\b(?:cannot keep (?:any )?(?:fluids|water) down|repeated vomiting|persistent vomiting|my abdomen is rigid|hard as a board)\\b/))urgency.push('abdominal_warnings');\n if(abd.location==='LOWER_RIGHT'&&s.known.worsening)urgency.push('abdomen');\n}\nif(flags.length) {s.level='EMERGENCY';s.emergencyReason=[...new Set([...s.emergencyReason,...flags])];}\nelse if(urgency.length && s.level!=='EMERGENCY') {s.level='URGENT';s.urgentReason=[...new Set([...s.urgentReason,...urgency])];}\ns.turn++;s.updatedAt=now;db[x.sessionId]=s;\nreturn [{json:{...x,ageSelectionHandled:explicitAgeChoice,ageBand:s.ageBand,emergency:s.level==='EMERGENCY',urgent:s.level==='URGENT',flags:s.emergencyReason,urgentFlags:s.urgentReason,memorySessionKey:`${x.sessionId}--${s.memoryEpoch}`,state:{patient:s.patient,age:s.age,ageBand:s.ageBand,known:s.known,medications:s.medications,conditions:s.conditions,complaint:s.complaint,asked:s.asked.slice(-12),lastQuestion:s.lastQuestion,questionCount:s.questionCount,level:s.level,turn:s.turn}}}];\n"
+      },
+      "name": "Session Safety State5",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -13072,
+        -17024
+      ],
+      "id": "bcd1da52-eb72-412f-a050-67788691df50"
+    },
+    {
+      "parameters": {
+        "jsCode": "const x=$input.first().json;\nconst f=x.flags||[];\nlet reply='These symptoms may represent a medical emergency. In Germany and across the EU, call 112 now. Do not drive yourself or delay to buy medicine. Ask someone nearby to help.';\nif(f.includes('poison')) reply='A suspected poisoning or swallowed button battery requires immediate emergency assessment. In Germany and across the EU, call 112 now; obtain poison-centre guidance as directed. Do not induce vomiting or delay to buy medicine. For a swallowed button battery, go to an emergency department immediately; do not give anything by mouth unless a poison specialist or emergency clinician tells you to.';\nelse if(f.includes('stroke')) reply='New speech difficulty or one-sided weakness may be a stroke. In Germany and across the EU, call 112 immediately. Note the last time the person was well. Do not give food, drink, or tablets; follow dispatcher instructions.';\nelse if(f.includes('breathing')) reply='Severe breathing difficulty can be life-threatening. In Germany and across the EU, call 112 now, remain in a position that makes breathing easier, and follow dispatcher instructions. Do not delay to purchase tablets.';\nelse if(f.includes('abdominal_bleeding')||f.includes('severe_abdominal_pain'))reply='Sudden severe abdominal pain or possible internal bleeding needs emergency assessment. In Germany and across the EU call 112 or seek emergency services now. Do not delay to buy tablets.';\nelse if(f.includes('heart')) reply='Chest pain or pressure can be a medical emergency. In Germany and across the EU, call 112 immediately. Do not drive yourself or delay for tablets.';\nconst res={reply,speakText:reply,stage:'EMERGENCY',disposition:'EMERGENCY',signals:f,channel:x.channel,sessionId:x.sessionId,medication:{status:'NOT_RECOMMENDED',options:[]},followUp:{required:false,question:null},requiresReview:true,demoOnly:true};\nreturn [{json:res}];\n"
+      },
+      "name": "Emergency Guidance Safe5",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -7792,
+        -18016
+      ],
+      "id": "08d3e725-a628-4318-a50e-d2eabf9355da"
+    },
+    {
+      "parameters": {
+        "jsCode": "const x=$input.first().json,f=x.urgentFlags||[];\nlet reply='This needs prompt professional assessment. Do not delay care to purchase a tablet. Follow the clinician or emergency service guidance if symptoms worsen.';\nif(f.includes('eye'))reply='A painful red eye with blurry or reduced vision needs urgent eye assessment today. If you wear contact lenses, remove them if they come out easily and do not reinsert them. Do not rely on eye drops from a vending machine instead of prompt assessment.';\nelse if(f.includes('pregnancy_abdominal_pain'))reply='Abdominal pain during pregnancy needs prompt assessment by a maternity or emergency clinical service, particularly if persistent, worsening or accompanied by bleeding. Do not select tablets without appropriate assessment.';\nelse if(f.includes('abdominal_warnings'))reply='Abdominal pain with persistent vomiting, inability to keep fluids down or a rigid abdomen needs prompt medical assessment. Do not delay seeking care to buy medicines.';\nelse if(f.includes('abdomen'))reply='Worsening pain in the lower right abdomen needs prompt in-person medical assessment. Do not delay evaluation to buy tablets. Seek emergency help if the person becomes faint, severely ill, or the pain becomes extreme.';\nelse if(f.includes('medicine_interaction_review'))reply='Diclofenac and other NSAID painkillers can increase bleeding risk when taken with warfarin. Do not start this combination without pharmacist or prescriber advice. Explain the pain, your warfarin use, and any other medicines when requesting a safer option.';\nreturn [{json:{reply,speakText:reply,stage:'URGENT',disposition:'URGENT',signals:f,sessionId:x.sessionId,channel:x.channel,medication:{status:'NOT_VERIFIED',options:[]},followUp:{required:false,question:null},requiresReview:true,demoOnly:true}}];\n"
+      },
+      "name": "Urgent Guidance Safe5",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -7792,
+        -17824
+      ],
+      "id": "da130a3a-3034-4d4c-9e69-c1f753957bde"
+    },
+    {
+      "parameters": {
+        "jsCode": "const x = $input.first().json;\nconst reply = 'Hello! I am NAF MedAssist, your medical guidance assistant. How can I help you today? Please tell me what symptoms or health concerns you are experiencing.';\nreturn [{json:{reply,speakText:reply,stage:'RESET',disposition:'INFORMATION',sessionId:x.sessionId,channel:x.channel,firstAid:{immediateActions:[],avoid:[],warningSigns:[]},requiresReview:false,medication:{status:'NOT_EVALUATED',options:[],personalizedRecommendation:false,doseAuthorized:false},followUp:{required:false,question:null,options:['Headache','Watery diarrhea','Cold & cough','Sore throat','Heartburn','Period cramps']},demoOnly:true}}];\n"
+      },
+      "name": "Reset Reply5",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -7792,
+        -18208
+      ],
+      "id": "c6ac4b27-7f93-4353-8005-0b8e60c39ca4"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "59f0fea7-4182-4540-b4c9-c10deaf83b7b",
+              "leftValue": "={{ $json.reset === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Reset Requested?5",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -12848,
+        -17024
+      ],
+      "id": "9c9c09ea-b9cf-4323-b518-c1149f1692f3"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "5e3e20b7-b1c7-4a19-932d-ad999540c057",
+              "leftValue": "={{ $json.emergency === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Emergency Sticky?5",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -12624,
+        -16928
+      ],
+      "id": "dd8f38de-b652-40ea-8cca-48e7d042135b"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "b975e386-d446-4b9b-a569-47d66e9ce751",
+              "leftValue": "={{ $json.urgent === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Urgent Sticky?5",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -12400,
+        -16832
+      ],
+      "id": "663dc78a-f6e0-4ac5-a433-af324e5c36b4"
+    },
+    {
+      "parameters": {
+        "jsCode": "const pre=$('Session Safety State5').first().json;\nconst raw=$input.first().json;\nlet o=raw.output??raw.text??raw.response??'';\nif(typeof o==='string') {try{o=JSON.parse(o.trim().replace(/^```(?:json)?\\s*/i,'').replace(/```\\s*$/,'').trim());}catch(e){o={};}}\nif(!o||typeof o!=='object'||Array.isArray(o)) o={};\nconst intentSet=new Set(['NONE','GENERAL_INFO','SUITABILITY','DOSAGE','COMPARISON']);\nconst m=o.medicineQuery&&typeof o.medicineQuery==='object'&&!Array.isArray(o.medicineQuery)?o.medicineQuery:{};\nlet intent=intentSet.has(m.intent)?m.intent:'NONE';\nconst msg=String(pre.message||'');\n// An apparent instruction to take/buy/dose must never be treated as a generic definition question.\nif(/\\b(?:how\\s+(?:much|many|often)|what\\s+dose|what\\s+dosage|\\d+\\s*mg|twice\\s+(?:a|per)\\s+day|once\\s+daily|every\\s+\\d+\\s+hours?|tablets?\\s+(?:a|per)\\s+day)\\b/i.test(msg)) intent='DOSAGE';\nelse if(intent==='GENERAL_INFO' && /\\b(?:can\\s+i\\s+take|should\\s+i\\s+take|i\\s+need\\s+|i\\s+want\\s+to\\s+take|safe\\s+for\\s+me|can\\s+my\\s+child\\s+take)\\b/i.test(msg))intent='SUITABILITY';\nif(intent==='NONE' && /\\b(?:can|should|may)\\s+(?:i|we|he|she|my\\s+(?:child|father|mother|brother|sister))\\s+(?:take|use|start)\\s+[\\p{L}]/iu.test(msg))intent='SUITABILITY';\n// Distinguish genuine general-purpose medicine information from personal dosing/suitability.\n// A vague 'I want information about paracetamol' must not force a clinical review result.\nif(/\\b(?:what\\s+is|what\\s+are|what\\s+does|tell\\s+me\\s+about|information\\s+about|what\\s+is\\s+it)\\b.{0,95}\\b(?:used\\s+for|for|medicine|paracetamol|ibuprofen|diclofenac|cetirizine|loratadine)\\b/i.test(msg)\n && !/\\b(?:can\\s+i\\s+take|should\\s+i\\s+take|safe\\s+for\\s+me|how\\s+much|how\\s+many|what\\s+dose|dosage|mg|twice|every\\s+\\d+\\s+hours?)\\b/i.test(msg))intent='GENERAL_INFO';\nconst medName=typeof m.name==='string'?m.name.trim().slice(0,100):null;\nif(intent==='NONE' && /\\b(?:tablets?|capsules?|pills?|medicine|medication|painkillers?|dosage|dose|mg)\\b/i.test(msg))intent=/\\b(?:what is|what are|what does|tell me about|explain)\\b/i.test(msg)?'GENERAL_INFO':'SUITABILITY';\n// Distinguish a user looking for relief from one asking about a NAMED product.\n// Gemini may suggest a medicine candidate; it is not proof that the customer named a package.\nconst complaint=String(pre.state?.complaint||'').toLowerCase();\nconst symptomContext=complaint+' '+msg.toLowerCase();\nconst wateryDiarrhea=/\\b(?:watery\\s+diarrh(?:ea|oea)|diarrh(?:ea|oea)|loose\\s+(?:motions?|stools?)|water(?:y)?\\s+stools?|runny\\s+stools?)\\b/i.test(symptomContext);\nconst genericHelp=/\\b(?:what|which|suggest|recommend|need|ne+ed|can|should)\\b.{0,75}\\b(?:take|medicines?|medcinies?|medications?|tablets?|pills?|treatment|remed(?:y|ies)|ors)\\b|\\bwhat\\b.{0,40}\\b(?:take|treatment|remed(?:y|ies))\\b/i.test(msg);\nconst normalizedText=(v)=>String(v||'').toLowerCase().normalize('NFKC').replace(/[^\\p{L}\\p{N}]+/gu,' ').replace(/\\s+/g,' ').trim();\nconst namedCurrent=!!(medName && normalizedText(msg).includes(normalizedText(medName)));\nconst namedPrior=!!(medName && normalizedText(complaint).includes(normalizedText(medName)));\n// If no medicine was named by this patient, avoid requiring a package name.\n// Safe non-drug measures come first; drug choices remain unverified.\nconst explicitORS=/^(?:ors|oral rehydration salts?|oral rehydration solution)$/i.test(String(m.name||'').trim());\nconst symptomReliefWithoutNamedDrug=genericHelp && ((!namedCurrent && !namedPrior)||explicitORS);\nif(symptomReliefWithoutNamedDrug) intent='SUITABILITY';\nconst medicationNeeded=['DOSAGE','SUITABILITY','COMPARISON'].includes(intent);\nconst describedSymptom=/\\b(?:stomach pain|stomachache|abdominal pain|belly pain|tummy pain|headache|diarrh|loose stool|sore throat|heartburn|back pain|toothache|cold|cough|rash|cramp|fever)\\b/i.test(symptomContext);\n// A model-suggested candidate is not a product the customer actually asked about.\n// When the customer provided a complaint but no named medicine, continue symptom triage.\n// With neither complaint nor medicine, a clarification is still appropriate.\nconst lookupNeeded=intent!=='NONE' && ((!!medName && (namedCurrent||namedPrior)) || !describedSymptom);\nreturn [{json:{...pre,output:o,medicationIntent:intent,medicationNeeded,medicationLookupNeeded:lookupNeeded,symptomReliefWithoutNamedDrug,symptomCareTopic:wateryDiarrhea?'WATERY_DIARRHEA':null,medicationName:medName,medicationStrength:typeof m.strength==='string'?m.strength.slice(0,80):null,medicationFormulation:typeof m.formulation==='string'?m.formulation.slice(0,80):null,medicationIntendedUse:typeof m.intendedUse==='string'?m.intendedUse.slice(0,160):null,cimaSuggestedName:typeof m.cimaSearchTerm==='string'?m.cimaSearchTerm.trim().slice(0,90):null}}];"
+      },
+      "name": "Parse Medicine Intent and EU Context4",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "id": "eca6ddc5-e8ac-44bc-99ce-22a25ca01fd8",
+      "position": [
+        -11152,
+        -17024
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "862a2480-8816-5624-aa3f-663bb98ba2b9",
+              "leftValue": "={{ $json.medicationNeeded === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Needs European Medicine Verification?4",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "id": "b46ead1b-a646-4383-b82e-3882dadb0074",
+      "position": [
+        -8240,
+        -17024
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Specific named product or dose requests: reference text is not a clinical approval.\nconst x=$input.first().json;\nconst n=String(x.medicationName||'this medicine').trim().slice(0,100);\nconst candidates=Array.isArray(x.cimaMatches)?x.cimaMatches:[];\nconst smpc=candidates.slice(0,3).map(c=>({title:'Official AEMPS CIMA (Spain): '+c.name,url:c.sourceUrl,jurisdiction:'ES'}));\nlet reply='';\nconst unnamed=!(typeof x.medicationName==='string'&&x.medicationName.trim());\nconst complaint=String(x.state?.complaint||'').toLowerCase();\nif(unnamed){\n if(/\\b(?:stomach|abdominal|tummy|belly)\\b/.test(complaint))reply='For stomach or abdominal pain, the right treatment depends on the location and cause. Before choosing tablets, where exactly is the pain, and is it severe, persistent or worsening? Seek prompt care if there is severe pain, repeated vomiting, blood, or fainting.';\n else reply='I can help you consider pharmacy treatments, but first tell me what symptoms or health concern you want to treat. I cannot choose a tablet or dose safely from an unnamed complaint.';\n}\n\nif(!unnamed && x.medicationIntent==='DOSAGE'){\n reply=`I can explain ${n}, but I cannot verify a safe personal dose or dosing frequency here. The exact formulation, age, other medicines and health conditions matter. Check the approved leaflet for your actual product and ask a pharmacist before starting or changing it.`;\n}else if(!unnamed && x.medicationIntent==='SUITABILITY'){\n reply=`${n} may be used for some conditions, but I cannot confirm it is appropriate for you without checking your health risks and other medicines. Please ask a pharmacist to check the exact product before taking it.`;\n}else if(!unnamed){\n reply=`I can explain general medicine options, but I cannot rank ${n} against another medicine for you without validated interaction and contraindication checks.`;\n}\nif(Array.isArray(x.state?.medications)&&x.state.medications.includes('warfarin')&& /\\b(?:diclofenac|ibuprofen|naproxen|aspirin)\\b/i.test(n)){reply='Because warfarin is reported, an anti-inflammatory medicine such as '+n+' can increase bleeding risk. Do not start it without checking with your prescriber or pharmacist. This is a safety concern, not a claim that you need emergency care right now.';}\nif(candidates.length)reply+=' The linked CIMA entries are Spanish regulatory references, not proof of German approval or suitability.';\nif(x.cimaSearchStatus==='UNAVAILABLE')reply+=' The reference service is currently unavailable.';\nreturn [{json:{reply,speakText:reply,stage:'MEDICATION_NOT_VERIFIED',disposition:'INFORMATION',sessionId:x.sessionId,channel:x.channel,firstAid:{immediateActions:[],avoid:[],warningSigns:[]},medication:{status:'NOT_VERIFIED',medicineName:x.medicationName||null,doseAuthorized:false,personalizedRecommendation:false,interactionChecked:false,options:[],sourceStatus:x.cimaSearchStatus||'NOT_SEARCHED'},followUp:{required:false,question:null},requiresReview:true,medicalReviewRequired:true,presentation:{kind:'MEDICATION_SAFETY_REVIEW',clinicalUrgency:'NONE',professionalReviewRequired:true},sources:smpc,demoOnly:true}}];\n"
+      },
+      "name": "Personal Medicine Safety Not Verified4",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "id": "59705ffe-c5ce-4b76-a9f4-d638e5e5facd",
+      "position": [
+        -7792,
+        -16832
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "0c904068-6d4f-4ad9-b59f-e86ddaadc5be",
+              "leftValue": "={{ $json.medicationLookupNeeded === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -10032,
+        -16832
+      ],
+      "id": "d68c02fb-2a92-44ef-9c72-4960f55f1974",
+      "name": "Medicine Question?4"
+    },
+    {
+      "parameters": {
+        "jsCode": "const x=$input.first().json;\n// Only public regulatory lookup: optional model-suggested Spanish search query is a hint, never a trusted clinical fact.\nfunction clean(v){return String(v||'').normalize('NFKC').replace(/[^\\p{L}\\p{N}\\s.\\-]/gu,' ').replace(/\\s+/g,' ').trim().slice(0,80)}\nconst name=clean(x.medicationName);\nlet hint=clean(x.cimaSuggestedName);\n// Conservative spelling normalization for two demonstration ingredients only; other queries use the extracted name.\nif(!hint && /^diclofenac$/i.test(name))hint='diclofenaco';\n// Reject unrelated model-proposed translations: registry search is not identity verification.\nif(hint && name && !hint.toLocaleLowerCase().startsWith(name.toLocaleLowerCase().slice(0,6)) && !(/^diclofenac$/i.test(name) && /^diclofenaco$/i.test(hint)))hint='';\nconst search=hint||name;\nconst valid=name.length>=3 && search.length>=3 && !/^\\d+$/.test(search) && search.split(' ').length<=8;\nreturn [{json:{...x,cimaSearchName:valid?search:null,cimaQueryAvailable:valid,cimaSource:'https://cima.aemps.es/cima/rest/medicamentos',cimaJurisdiction:'ES',emaEpiReference:'https://epi.developer.ema.europa.eu/api-details',medicinePersonalizedApproval:false}}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -9808,
+        -16928
+      ],
+      "id": "60361ebd-3f87-4514-ae16-f9bfce405ead",
+      "name": "Prepare CIMA Reference Query4"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "ff83b605-fc8a-448f-82da-700ce896680f",
+              "leftValue": "={{ $json.cimaQueryAvailable === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -9584,
+        -16928
+      ],
+      "id": "19df0b18-41fe-48c3-b072-deed6fb20f2e",
+      "name": "CIMA Query Available?4"
+    },
+    {
+      "parameters": {
+        "url": "https://cima.aemps.es/cima/rest/medicamentos",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "nombre",
+              "value": "={{ $json.cimaSearchName }}"
+            },
+            {
+              "name": "pagina",
+              "value": "1"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 12000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -9360,
+        -17024
+      ],
+      "id": "d3739ebb-7304-4353-ab16-4fcd86f859ed",
+      "name": "AEMPS CIMA Medicines Search4",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// v4.2: CIMA is a REGISTRY, not a personal suitability decision.\n// From a generic search, reference only single-ingredient, oral, currently marketed,\n// nonprescription Spanish products. Never show an opioid combination or IV infusion\n// as a casual OTC example. \"Sin Receta\" is ES-specific, not a German approval.\nconst x=$('Prepare CIMA Reference Query4').first().json;\nconst raw=$input.first().json;\nconst payload=(raw&&typeof raw.body==='object')?raw.body:raw;\nconst items=Array.isArray(payload?.resultados)?payload.resultados:Array.isArray(payload)?payload:null;\nconst status=Number(raw.statusCode??(raw.error?0:200));\nconst good=status>=200 && status<300 && Array.isArray(items);\nconst norm=v=>String(v||'').normalize('NFKC').toLocaleLowerCase().replace(/\\s+/g,' ').trim();\nconst query=norm(x.cimaSearchName);\nconst requestedStrength=norm(x.medicationStrength).replace(/\\s+/g,'');\nconst seen=new Set(), candidates=[];\nconst allItems=good?items:[];\nfor(const it of allItems){\n if(!it || typeof it!=='object')continue;\n const name=String(it.nombre||'').trim();\n const reg=String(it.nregistro||'');\n const ingredient=norm(it.vtm?.nombre);\n const exactIngredient=ingredient===query;\n const exactProductName=norm(name)===query || norm(name).startsWith(query+' ');\n // Names of combinations contain a separate molecule in CIMA's vtm field.\n if(!(exactIngredient || (exactProductName && ingredient && !/[+\\/]/.test(ingredient))))continue;\n if(!/^\\d{4,10}$/.test(reg)||seen.has(reg))continue;\n if(it.receta!==false || it.comerc!==true)continue;\n if(!Array.isArray(it.viasAdministracion)||!it.viasAdministracion.some(v=>norm(v?.nombre).includes('oral')))continue;\n const doc=Array.isArray(it.docs)?it.docs.find(v=>Number(v?.tipo)===1 && typeof v.urlHtml==='string'):null;\n // Prefer the actual official link in CIMA instead of constructing a guessed URL.\n const url=String(doc?.urlHtml||'');\n if(!url.startsWith(`https://cima.aemps.es/cima/dochtml/ft/${reg}/`))continue;\n if(!/^https:\\/\\/cima\\.aemps\\.es\\/cima\\/dochtml\\/ft\\/\\d{4,10}\\/[^?#\\s]+\\.html$/i.test(url))continue;\n seen.add(reg);\n candidates.push({\n  name:name.slice(0,160),registration:reg,sourceUrl:url,\n  spanishPrescriptionRequired:false,spanishMarketed:true,\n  strength:String(it.dosis||'').slice(0,65),formulation:String(it.formaFarmaceutica?.nombre||'').slice(0,100),\n  jurisdiction:'ES',route:'ORAL',verifiedIngredient:ingredient\n });\n}\n// These scores choose useful source examples, not the correct medicine or dose.\nconst score=c=>{\n let s=0;\n if(requestedStrength && norm(c.strength).replace(/\\s+/g,'')===requestedStrength)s+=100;\n if(/\\b(?:500\\s*mg)\\b/i.test(c.name))s+=6;\n if(/\\bcomprimidos?\\b/i.test(c.name))s+=3;\n return s;\n};\ncandidates.sort((a,b)=>score(b)-score(a)||a.name.localeCompare(b.name));\nconst publishedTotal=Number(payload?.totalFilas??payload?.total);\nconst hasTotal=Number.isFinite(publishedTotal)&&publishedTotal>=0;\nconst unique=candidates.length===1 && hasTotal && publishedTotal===1 &&\n (!requestedStrength || norm(candidates[0].strength).replace(/\\s+/g,'')===requestedStrength);\nconst truncated=good && ((hasTotal && publishedTotal>allItems.length)||candidates.length>5);\nreturn [{json:{...x,\n cimaSearchStatus:good?(candidates.length?'MATCHES':allItems.length?'NO_RETAIL_REFERENCE':'NO_MATCH'):'UNAVAILABLE',\n cimaMatches:candidates.slice(0,5),cimaCandidateCount:candidates.length,\n cimaRawRecordCount:allItems.length,cimaRegistryTotal:hasTotal?publishedTotal:null,\n cimaTruncated:truncated,cimaUniqueMatch:unique,\n cimaSelectedRegistration:unique?candidates[0].registration:null,\n cimaSelection:unique?candidates[0]:null,cimaSmPCIndication:null,\n cimaJurisdiction:'ES',germanProductAuthorizationChecked:false,\n personalizedSafetyVerified:false\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -9136,
+        -17024
+      ],
+      "id": "7fdebacf-d217-4d0b-bdf9-85507bb67526",
+      "name": "Normalize CIMA Regulatory Matches4"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "dec43ad3-38fe-4148-af1d-a81bd86cea3b",
+              "leftValue": "={{ $json.cimaUniqueMatch === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -8912,
+        -17024
+      ],
+      "id": "3f2818c7-4d53-4c9e-b906-dc65d6ef05e0",
+      "name": "Unique CIMA Product?4"
+    },
+    {
+      "parameters": {
+        "url": "https://cima.aemps.es/cima/rest/docSegmentado/contenido/1",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "nregistro",
+              "value": "={{ $json.cimaSelectedRegistration }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 12000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -8688,
+        -17248
+      ],
+      "id": "b5b0507b-bc8f-4399-a3c6-c2cd1fd5a2d7",
+      "name": "AEMPS CIMA SmPC Sections4",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const x=$('Normalize CIMA Regulatory Matches4').first().json;\nconst raw=$input.first().json;\nconst okHttp=!raw.error&&Number(raw.statusCode??200)>=200&&Number(raw.statusCode??200)<300;\nconst p=okHttp?(raw && raw.body!==undefined?raw.body:raw):null;\nconst sections=Array.isArray(p)?p:Array.isArray(p?.secciones)?p.secciones:[];\nconst section=sections.find(s=>String(s?.seccion||'').trim()==='4.1');\nfunction strip(s){return String(s||'').replace(/<script[\\s\\S]*?<\\/script>/gi,'').replace(/<style[\\s\\S]*?<\\/style>/gi,'').replace(/<[^>]+>/g,' ').replace(/&nbsp;/g,' ').replace(/\\s+/g,' ').trim();}\nconst indication=section&&typeof section.contenido==='string'?strip(section.contenido).slice(0,240):null;\nconst fromOfficial=String(x.cimaSelectedRegistration||'').match(/^\\d{4,10}$/);\nreturn [{json:{...x,cimaSmPCIndication:fromOfficial&&indication?indication:null,cimaSmPCStatus:fromOfficial&&indication?'OFFICIAL_ES_INDICATION_TEXT':'NOT_RETRIEVED',cimaSmPCSource:fromOfficial?`https://cima.aemps.es/cima/dochtml/ft/${x.cimaSelectedRegistration}/FichaTecnica.html`:null}}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -8464,
+        -17248
+      ],
+      "id": "74c79cfb-855a-41e5-b6d1-2ff4a233b860",
+      "name": "Extract Verified CIMA Section Links4"
+    },
+    {
+      "parameters": {
+        "jsCode": "const x=$input.first().json;\nconst reply='You do not need to know a medicine name to ask for help. What symptom or health concern would you like help with? I can suggest general first aid and explain possible pharmacy options, but cannot approve a specific tablet or dose without safety checks.';\nreturn [{json:{reply,speakText:reply,stage:'CLARIFY_MEDICINE',disposition:'UNRESOLVED',firstAid:{immediateActions:[],avoid:[],warningSigns:[]},medication:{status:'NOT_VERIFIED',personalizedRecommendation:false,doseAuthorized:false,options:[]},followUp:{required:true,question:'Which symptom do you want to relieve?',options:['Headache','Watery diarrhea','Sore throat','Heartburn','Blocked nose']},sessionId:x.sessionId,channel:x.channel,sources:[],requiresReview:false,demoOnly:true}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -7792,
+        -16640
+      ],
+      "id": "132becd9-d67d-44d1-a8a0-d86417524a48",
+      "name": "Clarify Missing Medicine Name4"
+    },
+    {
+      "parameters": {
+        "jsCode": "// v4.2: Clear difference between REGISTRY LOOKUP and PATIENT SAFETY REVIEW.\n// A general question such as \"what is paracetamol used for?\" should not create\n// a clinician-handover screen. Specific personal suitability/dose goes elsewhere.\nconst x=$input.first().json;\nconst name=String(x.medicationName||'the medicine').trim().slice(0,90);\nconst med=Array.isArray(x.cimaMatches)?x.cimaMatches:[];\nconst normalized=name.toLowerCase().normalize('NFKC').trim();\nconst info={\n paracetamol:{text:'Paracetamol is commonly used to relieve mild to moderate pain, including headaches or toothache, and to reduce fever. Avoid accidentally using two products containing paracetamol at the same time.',url:'https://www.nhs.uk/medicines/paracetamol-for-adults/',title:'NHS: Paracetamol for adults'},\n ibuprofen:{text:'Ibuprofen is an anti-inflammatory pain medicine sometimes used for headaches, period pain and muscle or joint pain. It is not suitable for everyone, including some people with stomach, kidney, bleeding or pregnancy risks.',url:'https://www.nhs.uk/medicines/ibuprofen-for-adults/',title:'NHS: Ibuprofen for adults'},\n diclofenac:{text:'Diclofenac is an anti-inflammatory pain medicine used for certain kinds of pain and inflammation. It has important precautions, especially with blood thinners, stomach ulcers and cardiovascular or kidney conditions.',url:'https://www.nhs.uk/medicines/diclofenac/',title:'NHS: Diclofenac'},\n cetirizine:{text:'Cetirizine is an antihistamine commonly used for allergies including hay fever and hives. It can cause drowsiness in some people.',url:'https://www.nhs.uk/medicines/cetirizine/',title:'NHS: Cetirizine'},\n loratadine:{text:'Loratadine is an antihistamine commonly used for allergy symptoms including hay fever and hives.',url:'https://www.nhs.uk/medicines/loratadine/',title:'NHS: Loratadine'}\n};\nconst fact=info[normalized]||null;\nconst patientRisk=Array.isArray(x.state?.medications)&&x.state.medications.length>0 ||\n Object.keys(x.state?.known||{}).some(k=>['pregnancy','allergies'].includes(k)&&x.state.known[k]);\nlet reply=fact?fact.text:`I can look up ${name} in an official medicine register, but its uses and warnings depend on the exact ingredient and formulation. Please consult the approved product information for the specific medicine.`;\nif(med.length){\n reply+=' I found reference entries in Spain\\'s official AEMPS CIMA register. These are Spanish product records, not confirmation of German authorization or a personal safety assessment.';\n} else if(x.cimaSearchStatus==='NO_RETAIL_REFERENCE'){\n reply+=' The CIMA search returned records, but I did not find a matching marketed nonprescription oral single-ingredient reference to display.';\n} else if(x.cimaSearchStatus==='UNAVAILABLE'){\n reply+=' The Spanish registry is temporarily unavailable; I have not verified a product record.';\n} else {\n reply+=' No matching Spanish product reference was confirmed; check the spelling or the product packaging.';\n}\nconst sources=med.slice(0,3).map(c=>({title:'AEMPS CIMA — '+c.name,url:c.sourceUrl,jurisdiction:'ES',registration:c.registration}));\nif(fact)sources.push({title:fact.title,url:fact.url,jurisdiction:'UK',type:'GENERAL_EDUCATION'});\nreturn [{json:{\n reply,speakText:reply,stage:'MEDICINE_INFORMATION',disposition:'INFORMATION',\n presentation:{kind:'EDUCATION',heading:'About '+name,professionalReviewRequired:false,clinicalUrgency:'NONE'},\n firstAid:{immediateActions:[],avoid:[],warningSigns:[]},\n medication:{status:'REFERENCE_INFORMATION_ONLY',medicineName:name,possibleProducts:med.slice(0,3),\n  doseAuthorized:false,personalizedRecommendation:false,interactionChecked:false,\n  germanProductAuthorizationChecked:false,sourceStatus:x.cimaSearchStatus||'NOT_SEARCHED',\n  candidateCount:x.cimaCandidateCount||0},\n followUp:{required:false,question:null,options:[]},\n sessionId:x.sessionId,channel:x.channel,sources,\n requiresReview:false,medicalReviewRequired:false,demoOnly:true,\n referenceJurisdiction:'ES',informationOnly:true,patientRisksReported:!!patientRisk\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -7792,
+        -17024
+      ],
+      "id": "ad7bf0e6-4feb-4c55-a64a-5abed29c6aef",
+      "name": "Compose CIMA Educational Reply4"
+    },
+    {
+      "parameters": {
+        "jsCode": "// v4: Do not convert a vague headache (including \"since yesterday\" or just \"suddenly\")\n// into a persistent URGENT flag simply because the model picked that label.\n// The independent red-flag scanner in Session Safety State already runs first.\nconst pre=$('Session Safety State5').first().json;\nconst raw=$input.first().json;\nlet o=raw.output??raw.text??raw.response??null;\nif(typeof o==='string'){\n  try{o=JSON.parse(o.trim().replace(/^```(?:json)?\\s*/i,'').replace(/```\\s*$/,'').trim());}\n  catch(e){o=null;}\n}\nconst allowed=new Set(['SELF_CARE','PROFESSIONAL_REVIEW','URGENT','EMERGENCY','UNRESOLVED','INFORMATION']);\nconst valid=o&&typeof o==='object'&&!Array.isArray(o)&&typeof o.reply==='string'&&o.reply.trim().length>=15&&o.reply.length<=3800&&allowed.has(o.disposition);\nlet aiRoute=valid?'CONTINUE':'INVALID';\nconst prior=(pre.state?.complaint||'')+' '+(pre.message||'');\nconst sourceText=prior.toLowerCase();\nlet grounding='';\nif(valid && typeof o.riskEvidence==='object' && typeof o.riskEvidence?.quote==='string'){\n  grounding=o.riskEvidence.quote.toLowerCase().trim().slice(0,200);\n}\nconst evidenceIndex=sourceText.indexOf(grounding);\nconst isNegatedEvidence=grounding.length>0 && (/(?:^|\\b)(?:no|not|without|never|deny|denies|don'?t have|doesn'?t have)\\b.{0,32}$/i.test(sourceText.slice(Math.max(0,evidenceIndex-35),Math.max(0,evidenceIndex))) || /^(?:no |not |without |denies )/i.test(grounding));\nconst grounded=grounding.length>=7 && evidenceIndex>=0 && !isNegatedEvidence;\nconst emergencyCue=/(?:worst headache|extremely painful|thunderclap|maximum intensity|within (?:one|1|five|5) minutes|sudden.*(?:severe|extreme)|slurred speech|weak arm|face droop|cannot breathe|can't breathe|severe.*breath|unresponsive|unconscious|chest pain|chest pressure|heavy bleeding|button battery|seizure|tongue swelling|throat closing|overdose|poison)/i;\nconst urgentCue=/(?:red eye.*(?:pain|blur)|blurred vision.*(?:eye|pain)|vision.*(?:sudden|loss)|right lower.*(?:pain|wors)|lower right.*(?:pain|wors)|blood.*(?:stool|diarrh)|severe dehydration|no urine|after antibiotics|pregnan\\w*.*(?:bleed|severe pain)|fever.*stiff neck|neck stiff.*fever)/i;\nconst independentFlags=Array.isArray(pre.flags)?pre.flags:[];\nconst independentlyUrgent=Array.isArray(pre.urgentFlags)?pre.urgentFlags:[];\nconst alreadyEmergency=pre.emergency===true || independentFlags.length>0;\nconst alreadyUrgent=pre.urgent===true || independentlyUrgent.length>0;\nlet suppressedUnsupportedUrgency=false;\nif(valid && (o.disposition==='URGENT'||o.disposition==='EMERGENCY')){\n  if(o.disposition==='EMERGENCY' && (alreadyEmergency || (grounded && emergencyCue.test(grounding)))) aiRoute='EMERGENCY';\n  else if(o.disposition==='URGENT' && (alreadyUrgent || (grounded && urgentCue.test(grounding)))) aiRoute='URGENT';\n  else if(grounded && urgentCue.test(grounding)) aiRoute='URGENT';\n  else{\n    suppressedUnsupportedUrgency=true;\n    o.disposition='UNRESOLVED';\n    // Never show a model's unsubstantiated generic escalation as a clinical finding.\n    o.reply='For a common mild symptom, I can explain general self-care and OTC treatment options, but I need to check for warning signs and medicine risks before suggesting what is appropriate for you.';\n  }\n}\nif(valid && aiRoute==='CONTINUE' && o.disposition==='PROFESSIONAL_REVIEW' && /headache/i.test(prior) && !urgentCue.test(prior) && !emergencyCue.test(prior)){\n  // Model's nonspecific review label should not suppress ordinary OTC education.\n  o.disposition='SELF_CARE';\n}\n// Only corroborated emergencies/urgencies can make state sticky.\nconst store=$getWorkflowStaticData('global');const s=store.medassistSessions?.[pre.sessionId];\nif(s && (aiRoute==='EMERGENCY'||aiRoute==='URGENT')){\n  if(aiRoute==='EMERGENCY'){s.level='EMERGENCY';s.emergencyReason=[...new Set([...(s.emergencyReason||[]),'model_evidence_grounded'])];}\n  else if(s.level!=='EMERGENCY'){s.level='URGENT';s.urgentReason=[...new Set([...(s.urgentReason||[]),'model_evidence_grounded'])];}\n  s.updatedAt=Date.now();store.medassistSessions[pre.sessionId]=s;\n}\nreturn [{json:{...pre,output:valid?o:null,aiRoute,aiShortCircuit:aiRoute!=='CONTINUE',aiSchemaValid:!!valid,suppressedUnsupportedUrgency}}];\n"
+      },
+      "id": "a126c997-e24d-4df2-bf4c-1a1185ffae7d",
+      "name": "AI Triage & JSON Schema Gate4",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -11600,
+        -16928
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "d1a9ac97-583f-46e5-a879-dd636d614114",
+              "leftValue": "={{ $json.aiShortCircuit === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "7f5f5f50-0ecb-42ef-af1a-dec91365167c",
+      "name": "AI Emergency, Urgent or Invalid?4",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -11376,
+        -16928
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const x=$input.first().json;\nlet disposition='UNRESOLVED',stage='RESULT',reply='I cannot safely complete this assessment right now. If symptoms are severe or worsening, seek urgent medical advice. Otherwise contact a pharmacist or healthcare professional.';\nif(x.aiRoute==='EMERGENCY'){\n  disposition='EMERGENCY';stage='EMERGENCY';\n  reply='Your description could indicate a medical emergency. Call emergency services immediately (112 in Germany and across the EU), and follow the dispatcher’s instructions. Do not delay for tablets.';\n}else if(x.aiRoute==='URGENT'){\n  disposition='URGENT';stage='URGENT';\n  reply='Your symptoms may need prompt in-person medical assessment. Seek urgent medical help rather than waiting to buy medication. Call emergency services if severe or rapidly worsening.';\n}\nreturn [{json:{reply,speakText:reply,stage,disposition,firstAid:{immediateActions:[],avoid:[],warningSigns:[]},medication:{status:'NOT_VERIFIED',doseAuthorized:false,personalizedRecommendation:false,options:[]},followUp:{required:false,question:null},sessionId:x.sessionId,channel:x.channel,requiresReview:true,demoOnly:true,sources:[]}}];\n"
+      },
+      "id": "eaeb91d0-058a-4304-8466-9fdc0d86c893",
+      "name": "AI Safe Escalation Reply4",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -7792,
+        -16256
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "59ddb2a0-8242-4a19-be5e-f0596037f61f",
+              "leftValue": "={{ $json.cimaSearchStatus === \"UNAVAILABLE\" }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "CIMA Service Unavailable?4",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -8016,
+        -17120
+      ],
+      "id": "94090630-1a90-4a75-a5a8-317bbb891b96"
+    },
+    {
+      "parameters": {
+        "jsCode": "const x=$input.first().json;\nconst reply='The official Spanish AEMPS medicine reference service is temporarily unavailable, so I cannot confirm a matching product record. I cannot verify this medicine or any personalized dosing. Please check the package and ask a pharmacist or clinician.';\nreturn [{json:{reply,speakText:reply,stage:'REFERENCE_UNAVAILABLE',disposition:'UNRESOLVED',firstAid:{immediateActions:[],avoid:[],warningSigns:[]},medication:{status:'NOT_VERIFIED',personalizedRecommendation:false,doseAuthorized:false,sourceStatus:'UNAVAILABLE',options:[]},followUp:{required:false,question:null},sessionId:x.sessionId,channel:x.channel,sources:[],requiresReview:true,demoOnly:true}}];"
+      },
+      "name": "CIMA Source Unavailable Fallback4",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -7792,
+        -17216
+      ],
+      "id": "d982e88e-6978-4e59-bb10-6f72d669e833"
+    },
+    {
+      "parameters": {
+        "jsCode": "// v4 consolidated education response formatting. Format display text without modifying medical decisions or removing warnings.\n// Keep the exact reset greeting equal in reply and speakText.\nconst x=$input.first().json;\nif(typeof x.reply!=='string')return [{json:x}];\nconst text=x.reply.trim();\nif(x.stage==='RESET')return [{json:{...x,reply:text,speakText:text,ui:{view:'INFORMATION',heading:'Welcome',sourceCount:0},presentation:{kind:'INFORMATION',heading:'Welcome',clinicalUrgency:'NONE',professionalReviewRequired:false}}}];\nlet formatted=text;\nif(!text.includes('\\n') && text.length>215){\n  // Break at sentence boundaries only. Preserve sentence order and every word.\n  const parts=text.split(/(?<=[.!?])\\s+(?=[A-ZÀ-Ý])/u);\n  if(parts.length>=3){\n    const groups=[];let group='';\n    for(const part of parts){\n      if(group && group.length+part.length>185){groups.push(group);group=part;}\n      else group=group?group+' '+part:part;\n    }\n    if(group)groups.push(group);\n    if(groups.length>1)formatted=groups.join('\\n\\n');\n  }\n}\nconst speak=formatted.replace(/\\s*\\n+\\s*/g,' ').replace(/\\s+/g,' ').trim();\nconst urgent=x.disposition==='URGENT'||x.disposition==='EMERGENCY';\nconst clinicalReview=x.requiresReview===true||x.medicalReviewRequired===true||x.presentation?.professionalReviewRequired===true;\nconst view=urgent?'URGENT':clinicalReview?'CLINICAL_REVIEW':'INFORMATION';\nconst heading=urgent?(x.disposition==='EMERGENCY'?'Emergency guidance':'Urgent medical guidance'):\n clinicalReview?'Check with a pharmacist or clinician':\n x.stage==='MEDICINE_INFORMATION'?'Medicine information':\n x.stage==='RESET'?'Welcome':'Medical guidance';\n// Separate UX navigation state from medical verification status and source lookup.\n// A Spanish CIMA result must NEVER by itself trigger a professional-review card.\nconst presentation={...x.presentation,kind:view,heading,\n professionalReviewRequired:clinicalReview,clinicalUrgency:urgent?x.disposition:'NONE'};\nreturn [{json:{...x,reply:formatted,speakText:speak,presentation,\n ui:{view,heading,sourceCount:Array.isArray(x.sources)?x.sources.length:0}}}];"
+      },
+      "name": "Format Chat and Voice Reply4",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -7568,
+        -17120
+      ],
+      "id": "8a2b10a1-0992-46b6-b26e-37da1c5e5acf"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "a79c3cd7-c161-48c7-bc8d-8651fb0a71a5",
+              "leftValue": "={{ $json.ageSelectionHandled === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Age Group Button Selected?1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -12176,
+        -16704
+      ],
+      "id": "85c7b0dc-1fc4-4cad-b9b3-653e19191f8f"
+    },
+    {
+      "parameters": {
+        "jsCode": "const x=$input.first().json;\nconst store=$getWorkflowStaticData('global');\nconst s=store.medassistSessions?.[x.sessionId];\nconst band=x.ageBand;\nconst label=band==='UNDER_18'?'under 18':band==='AGE_65_PLUS'?'65 or older':'18–64';\nconst context=String(s?.complaint||'').toLowerCase();\nlet message='Thanks. I have recorded the age group as '+label+'.';\nlet q='What symptom or health concern would you like help with?';\nlet options=['Headache','Cold & cough','Watery diarrhea','Sore throat'];\nif(/\\bcough\\b|\\bcold\\b/.test(context)){\n  message+=' We can continue with the cold and cough. If there is severe breathing difficulty, chest pain or coughing blood, seek urgent medical help.';\n  if(band==='UNDER_18')message+=' Children need age-appropriate advice; do not use adult cold and cough tablets.';\n  if(band==='AGE_65_PLUS')message+=' Medicine choice also depends on existing conditions and other prescriptions.';\n  q='Is the cough dry, or are you bringing up mucus?';\n  options=['Dry cough','Cough with mucus','Not sure'];\n}else if(/\\bheadache|head pain/.test(context)){\n  message+=' For ordinary mild headaches, paracetamol is a common pain-relief option; ibuprofen may be another option for some adults. Neither is approved for you personally by this chat.';\n  q='Are you taking regular medicines or do you have any medicine allergies?';\n  options=['No medicines or allergies','I take blood thinners','I have medicine allergies'];\n}else if(/\\bdiarrh|loose stool|watery stool/.test(context)){\n  message+=' For watery diarrhea, start with oral rehydration salts (ORS), mixed exactly as directed on the packet.';\n  q='How long has the diarrhea been going on?';\n  options=['Since today','1–2 days','More than 2 days'];\n}else if(/\\b(?:stomach pain|stomachache|abdominal pain|belly pain|tummy pain)\\b/.test(context)){\n  message+=' We can continue assessing the stomach pain. The cause matters before discussing tablets.';\n  q='Where exactly is the stomach pain?';\n  options=['Upper abdomen','Lower right','Lower left','Around my belly button','All over','Not sure'];\n}else if(/\\bsore throat/.test(context)){\n  message+=' For a mild sore throat, comfort measures and suitable pharmacy pain relief can help, but product choice needs safety checks.';\n  q='Is swallowing difficult or is there any breathing difficulty?';\n  options=['No','Difficulty swallowing','Breathing difficulty'];\n}\nif(s){\n const norm=z=>String(z||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();\n if(!s.asked.some(v=>norm(v)===norm(q))) s.asked=[...s.asked,q].slice(-15);\n s.lastQuestion=q;s.questionCount=(s.questionCount||0)+1;s.updatedAt=Date.now();store.medassistSessions[x.sessionId]=s;\n}\nconst reply=message+'\\n\\n'+q;\nreturn [{json:{reply,speakText:reply.replace(/\\s*\\n+\\s*/g,' ').trim(),stage:'FOLLOW_UP',disposition:'INFORMATION',sessionId:x.sessionId,channel:x.channel,ageBand:band,firstAid:{immediateActions:[],avoid:[],warningSigns:[]},medication:{status:'EDUCATIONAL_OPTIONS_ONLY',options:[],personalizedRecommendation:false,doseAuthorized:false},followUp:{required:true,question:q,options},requiresReview:false,demoOnly:true}}];"
+      },
+      "name": "Continue After Age Button1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -7792,
+        -15936
+      ],
+      "id": "1cacc1e8-b507-4cdb-9656-2d4810498ba9"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "POST Unified MedAssist1": {
+      "main": [
+        [
+          {
+            "node": "Validate & Normalize6",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Identify Abdominal Pain Context": {
+      "main": [
+        [
+          {
+            "node": "Needs Abdominal Pain Interview?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Abdominal Pain Interview?": {
+      "main": [
+        [
+          {
+            "node": "Guided Abdominal Pain Interview",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Supported Symptom Education Topic?3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guided Abdominal Pain Interview": {
+      "main": [
+        [
+          {
+            "node": "Format Chat and Voice Reply4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Supported Symptom Education Topic?3": {
+      "main": [
+        [
+          {
+            "node": "Symptom-First OTC Education and Safety3",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Medicine Question?4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Symptom-First OTC Education and Safety3": {
+      "main": [
+        [
+          {
+            "node": "Format Chat and Voice Reply4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Identify Evidence-Led Symptom Options3": {
+      "main": [
+        [
+          {
+            "node": "Identify Abdominal Pain Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate & Normalize6": {
+      "main": [
+        [
+          {
+            "node": "Valid Input?8",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid Input?8": {
+      "main": [
+        [
+          {
+            "node": "Session Safety State5",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Validation Error6",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validation Error6": {
+      "main": [
+        [
+          {
+            "node": "Respond 407",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Universal Interview6": {
+      "main": [
+        [
+          {
+            "node": "AI Triage & JSON Schema Gate4",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AI Unavailable6",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini 3.8 Flash6": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Gemini Universal Interview6",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "n8n Simple Memory6": {
+      "ai_memory": [
+        [
+          {
+            "node": "Gemini Universal Interview6",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate AI & Limit Medication Claims6": {
+      "main": [
+        [
+          {
+            "node": "Format Chat and Voice Reply4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Unavailable6": {
+      "main": [
+        [
+          {
+            "node": "Respond 512",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Session Safety State5": {
+      "main": [
+        [
+          {
+            "node": "Reset Requested?5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Emergency Guidance Safe5": {
+      "main": [
+        [
+          {
+            "node": "Format Chat and Voice Reply4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Urgent Guidance Safe5": {
+      "main": [
+        [
+          {
+            "node": "Format Chat and Voice Reply4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reset Reply5": {
+      "main": [
+        [
+          {
+            "node": "Format Chat and Voice Reply4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reset Requested?5": {
+      "main": [
+        [
+          {
+            "node": "Reset Reply5",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Emergency Sticky?5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Emergency Sticky?5": {
+      "main": [
+        [
+          {
+            "node": "Emergency Guidance Safe5",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Urgent Sticky?5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Urgent Sticky?5": {
+      "main": [
+        [
+          {
+            "node": "Urgent Guidance Safe5",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Age Group Button Selected?1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Medicine Intent and EU Context4": {
+      "main": [
+        [
+          {
+            "node": "Identify Evidence-Led Symptom Options3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs European Medicine Verification?4": {
+      "main": [
+        [
+          {
+            "node": "Personal Medicine Safety Not Verified4",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CIMA Service Unavailable?4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Personal Medicine Safety Not Verified4": {
+      "main": [
+        [
+          {
+            "node": "Format Chat and Voice Reply4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Medicine Question?4": {
+      "main": [
+        [
+          {
+            "node": "Prepare CIMA Reference Query4",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Validate AI & Limit Medication Claims6",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare CIMA Reference Query4": {
+      "main": [
+        [
+          {
+            "node": "CIMA Query Available?4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CIMA Query Available?4": {
+      "main": [
+        [
+          {
+            "node": "AEMPS CIMA Medicines Search4",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Clarify Missing Medicine Name4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AEMPS CIMA Medicines Search4": {
+      "main": [
+        [
+          {
+            "node": "Normalize CIMA Regulatory Matches4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize CIMA Regulatory Matches4": {
+      "main": [
+        [
+          {
+            "node": "Unique CIMA Product?4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unique CIMA Product?4": {
+      "main": [
+        [
+          {
+            "node": "AEMPS CIMA SmPC Sections4",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Needs European Medicine Verification?4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AEMPS CIMA SmPC Sections4": {
+      "main": [
+        [
+          {
+            "node": "Extract Verified CIMA Section Links4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Verified CIMA Section Links4": {
+      "main": [
+        [
+          {
+            "node": "Needs European Medicine Verification?4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clarify Missing Medicine Name4": {
+      "main": [
+        [
+          {
+            "node": "Format Chat and Voice Reply4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose CIMA Educational Reply4": {
+      "main": [
+        [
+          {
+            "node": "Format Chat and Voice Reply4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Triage & JSON Schema Gate4": {
+      "main": [
+        [
+          {
+            "node": "AI Emergency, Urgent or Invalid?4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Emergency, Urgent or Invalid?4": {
+      "main": [
+        [
+          {
+            "node": "AI Safe Escalation Reply4",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Parse Medicine Intent and EU Context4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Safe Escalation Reply4": {
+      "main": [
+        [
+          {
+            "node": "Format Chat and Voice Reply4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CIMA Service Unavailable?4": {
+      "main": [
+        [
+          {
+            "node": "CIMA Source Unavailable Fallback4",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Compose CIMA Educational Reply4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CIMA Source Unavailable Fallback4": {
+      "main": [
+        [
+          {
+            "node": "Format Chat and Voice Reply4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Chat and Voice Reply4": {
+      "main": [
+        [
+          {
+            "node": "Respond 208",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Age Group Button Selected?1": {
+      "main": [
+        [
+          {
+            "node": "Continue After Age Button1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gemini Universal Interview6",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue After Age Button1": {
+      "main": [
+        [
+          {
+            "node": "Format Chat and Voice Reply4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "cd3d5b6d-d413-45dd-ad88-5f46ed529eb8",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "c53257bed1f0fcf835991b184a5f5a690a62c31f39b42c9afb9d86ed3ee22612"
+  },
+  "nodeGroups": [],
+  "id": "gyHmCMYOngnzMtaA",
+  "tags": []
+}

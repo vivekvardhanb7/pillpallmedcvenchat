@@ -1,0 +1,21 @@
+{
+  "name": "pillpal-medassist-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:workflow": "node n8n/build-workflow.mjs",
+    "check": "node scripts/check-workflow-drift.mjs",
+    "test": "node scripts/test-n8n-engine.mjs && node scripts/test-i18n.mjs && node scripts/test-voice-mapper.mjs && node scripts/check-workflow-drift.mjs",
+    "test:journeys": "node scripts/test-customer-journeys.mjs",
+    "test:journeys:live": "node scripts/test-customer-journeys.mjs --live",
+    "test:product-path": "node scripts/test-product-path-live.mjs",
+    "smoke:live": "node scripts/smoke-live.mjs",
+    "audit:catalog": "node scripts/audit-catalog.mjs",
+    "start": "node web/server.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
+

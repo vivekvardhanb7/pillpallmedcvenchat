@@ -1,0 +1,324 @@
+{
+  "name": "PILLPAL MedAssist - Supabase Safety Chat MVP",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pillpal-chat-turn",
+        "responseMode": "responseNode",
+        "authentication": "headerAuth",
+        "options": {}
+      },
+      "id": "650312df-28ab-41cd-b14b-2f9a593e1672",
+      "name": "Chat Turn Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -760,
+        100
+      ],
+      "webhookId": "9cfc0d51-245f-4c08-bbff-65abb6d6dfb6",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "sKKZe6liXy5SsWfl",
+          "name": "Backend Service Auth Medtest"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * PILLPAL MedAssist - deterministic intake and safety engine.\n * n8n Code node: Run Once for All Items.\n *\n * The browser sends the state returned by the previous response. This code\n * validates every field again and never trusts arbitrary client state.\n */\n\nconst rawItem = $input.first().json || {};\n\nfunction parsePayload(value) {\n  let body = value && Object.prototype.hasOwnProperty.call(value, 'body') ? value.body : value;\n  if (typeof body === 'string') {\n    try { body = JSON.parse(body); } catch (_) { body = {}; }\n  }\n  return body && typeof body === 'object' && !Array.isArray(body) ? body : {};\n}\n\nfunction cleanText(value, maxLength = 240) {\n  return String(value ?? '')\n    .replace(/[<>\\u0000-\\u001f]/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim()\n    .slice(0, maxLength);\n}\n\nfunction normalize(value) {\n  return cleanText(value, 300)\n    .normalize('NFKD')\n    .replace(/\\p{M}/gu, '')\n    .toLowerCase();\n}\n\nfunction cleanList(value, limit = 12) {\n  const list = Array.isArray(value) ? value : String(value ?? '').split(/[,;\\n]/);\n  return [...new Set(list.map(v => cleanText(v, 90)).filter(Boolean))].slice(0, limit);\n}\n\nfunction sessionKey(value) {\n  const candidate = cleanText(value, 80);\n  if (/^[A-Za-z0-9_-]{8,80}$/.test(candidate)) return candidate;\n  return `session_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;\n}\n\nconst PATHWAYS = [\n  { value: 'pain_fever', label: 'Headache, pain or fever', icon: 'thermometer' },\n  { value: 'cold_cough', label: 'Cold or cough', icon: 'lungs' },\n  { value: 'allergy', label: 'Allergy', icon: 'allergy' },\n  { value: 'diarrhoea', label: 'Diarrhoea', icon: 'stomach' },\n  { value: 'heartburn', label: 'Heartburn or stomach discomfort', icon: 'digestive' },\n  { value: 'skin_minor_wound', label: 'Skin or minor wound', icon: 'bandage' },\n  { value: 'other', label: 'Other symptom', icon: 'chat' },\n];\n\nconst PATHWAY_CODES = new Set(PATHWAYS.map(p => p.value));\nconst DURATION_CODES = new Set(['today', '1_to_2_days', '3_to_7_days', 'more_than_7_days']);\nconst SEVERITY_CODES = new Set(['mild', 'moderate', 'severe']);\nconst PREGNANCY_CODES = new Set(['pregnant', 'breastfeeding', 'both', 'no', 'not_applicable', 'prefer_not_to_say']);\nconst YES_NO_UNSURE = new Set(['yes', 'no', 'not_sure']);\n\nfunction newState(countryCode, languageCode) {\n  return {\n    version: 1,\n    country_code: countryCode,\n    language_code: languageCode,\n    step: 'symptom',\n    pathway_code: null,\n    age_years: null,\n    duration_code: null,\n    severity: null,\n    warning_signs: null,\n    warning_signs_answer: null,\n    pregnancy_breastfeeding: null,\n    allergy_status: null,\n    allergy_terms: [],\n    medication_status: null,\n    medication_terms: [],\n    condition_status: null,\n    condition_terms: [],\n    confirmed: false,\n    completed: false,\n    turns: 0,\n    started_at_ms: Date.now(),\n  };\n}\n\nfunction sanitizeState(raw, countryCode, languageCode) {\n  const state = newState(countryCode, languageCode);\n  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return state;\n\n  if (PATHWAY_CODES.has(raw.pathway_code)) state.pathway_code = raw.pathway_code;\n  if (Number.isInteger(raw.age_years) && raw.age_years >= 0 && raw.age_years <= 120) state.age_years = raw.age_years;\n  if (DURATION_CODES.has(raw.duration_code)) state.duration_code = raw.duration_code;\n  if (SEVERITY_CODES.has(raw.severity)) state.severity = raw.severity;\n  if (typeof raw.warning_signs === 'boolean') state.warning_signs = raw.warning_signs;\n  if (YES_NO_UNSURE.has(raw.warning_signs_answer)) state.warning_signs_answer = raw.warning_signs_answer;\n  if (PREGNANCY_CODES.has(raw.pregnancy_breastfeeding)) state.pregnancy_breastfeeding = raw.pregnancy_breastfeeding;\n  if (YES_NO_UNSURE.has(raw.allergy_status)) state.allergy_status = raw.allergy_status;\n  if (YES_NO_UNSURE.has(raw.medication_status)) state.medication_status = raw.medication_status;\n  if (YES_NO_UNSURE.has(raw.condition_status)) state.condition_status = raw.condition_status;\n  state.allergy_terms = cleanList(raw.allergy_terms);\n  state.medication_terms = cleanList(raw.medication_terms);\n  state.condition_terms = cleanList(raw.condition_terms);\n  state.confirmed = raw.confirmed === true;\n  state.completed = raw.completed === true;\n  if (Number.isInteger(raw.turns) && raw.turns >= 0 && raw.turns <= 40) state.turns = raw.turns;\n  if (Number.isInteger(raw.started_at_ms) && raw.started_at_ms > 0 && raw.started_at_ms <= state.started_at_ms) {\n    state.started_at_ms = raw.started_at_ms;\n  }\n\n  const allowedSteps = new Set([\n    'symptom', 'age', 'duration', 'severity', 'warning_signs',\n    'pregnancy_breastfeeding', 'allergy_status', 'allergy_terms',\n    'medication_status', 'medication_terms', 'condition_status',\n    'condition_terms', 'confirm', 'complete',\n  ]);\n  if (allowedSteps.has(raw.step)) state.step = raw.step;\n  return state;\n}\n\nfunction option(value, label, extra = {}) {\n  return { value, label, ...extra };\n}\n\nfunction screenFor(step, error = null) {\n  const common = { question_id: step, required: true, error };\n  switch (step) {\n    case 'symptom':\n      return {\n        ...common,\n        type: 'single_select',\n        title: 'What would you like help with?',\n        subtitle: 'Choose the closest option. This is not a diagnosis.',\n        options: PATHWAYS,\n      };\n    case 'age':\n      return {\n        ...common,\n        type: 'number',\n        title: 'What is your age?',\n        subtitle: 'Enter age in completed years.',\n        minimum: 0,\n        maximum: 120,\n      };\n    case 'duration':\n      return {\n        ...common,\n        type: 'single_select',\n        title: 'How long have you had this symptom?',\n        options: [\n          option('today', 'Started today'),\n          option('1_to_2_days', '1–2 days'),\n          option('3_to_7_days', '3–7 days'),\n          option('more_than_7_days', 'More than 7 days'),\n        ],\n      };\n    case 'severity':\n      return {\n        ...common,\n        type: 'single_select',\n        title: 'How severe is it right now?',\n        options: [\n          option('mild', 'Mild'),\n          option('moderate', 'Moderate'),\n          option('severe', 'Severe'),\n        ],\n      };\n    case 'warning_signs':\n      return {\n        ...common,\n        type: 'single_select',\n        title: 'Do any serious warning signs apply?',\n        subtitle: 'Examples include trouble breathing, chest pressure, fainting, confusion, significant bleeding, a sudden extreme symptom, or being unable to keep fluids down. This general list is not a complete pathway-specific clinical screen.',\n        options: [\n          option('no', 'No, none of these'),\n          option('yes', 'Yes, one or more'),\n          option('not_sure', 'I am not sure'),\n        ],\n      };\n    case 'pregnancy_breastfeeding':\n      return {\n        ...common,\n        type: 'single_select',\n        title: 'Are you pregnant or breastfeeding?',\n        options: [\n          option('pregnant', 'Pregnant'),\n          option('breastfeeding', 'Breastfeeding'),\n          option('both', 'Both'),\n          option('no', 'No'),\n          option('not_applicable', 'Not applicable'),\n          option('prefer_not_to_say', 'Prefer not to say'),\n        ],\n      };\n    case 'allergy_status':\n      return {\n        ...common,\n        type: 'single_select',\n        title: 'Do you have any medicine allergies?',\n        options: [option('no', 'No'), option('yes', 'Yes'), option('not_sure', 'Not sure')],\n      };\n    case 'allergy_terms':\n      return {\n        ...common,\n        type: 'text',\n        title: 'Which medicines or ingredients are you allergic to?',\n        subtitle: 'Separate multiple entries with commas.',\n        placeholder: 'Example: ibuprofen, aspirin',\n      };\n    case 'medication_status':\n      return {\n        ...common,\n        type: 'single_select',\n        title: 'Are you currently taking any medicines?',\n        subtitle: 'Include prescription and non-prescription medicines.',\n        options: [option('no', 'No'), option('yes', 'Yes'), option('not_sure', 'Not sure')],\n      };\n    case 'medication_terms':\n      return {\n        ...common,\n        type: 'text',\n        title: 'Which medicines are you taking?',\n        subtitle: 'Separate multiple entries with commas.',\n        placeholder: 'Enter medicine names',\n      };\n    case 'condition_status':\n      return {\n        ...common,\n        type: 'single_select',\n        title: 'Do you have any ongoing medical conditions?',\n        options: [option('no', 'No'), option('yes', 'Yes'), option('not_sure', 'Not sure')],\n      };\n    case 'condition_terms':\n      return {\n        ...common,\n        type: 'text',\n        title: 'Which medical conditions do you have?',\n        subtitle: 'Separate multiple entries with commas.',\n        placeholder: 'Enter conditions',\n      };\n    case 'confirm':\n      return {\n        ...common,\n        type: 'confirmation',\n        title: 'Please confirm your answers',\n        options: [option('yes', 'Confirm and check products'), option('no', 'Start again')],\n      };\n    default:\n      return screenFor('symptom', error);\n  }\n}\n\nconst NOT_ASKED = 'Not asked';\nconst WARNING_ANSWER_LABEL = { yes: 'Reported', no: 'None reported', not_sure: 'Not sure' };\n\nfunction summaryFor(state) {\n  const pathway = PATHWAYS.find(p => p.value === state.pathway_code);\n  const label = (value, values) => (value == null ? NOT_ASKED : values[value] || value);\n  const history = (status, terms) => {\n    if (status == null) return NOT_ASKED;\n    return status === 'no' ? 'None reported' : terms.length ? terms : 'Not provided';\n  };\n  const warningSigns = WARNING_ANSWER_LABEL[state.warning_signs_answer]\n    || (state.warning_signs === false ? 'None reported' : state.warning_signs === true ? 'Reported' : NOT_ASKED);\n  return {\n    symptom_category: pathway?.label || NOT_ASKED,\n    age: state.age_years ?? NOT_ASKED,\n    duration: label(state.duration_code, {\n      today: 'Started today',\n      '1_to_2_days': '1–2 days',\n      '3_to_7_days': '3–7 days',\n      more_than_7_days: 'More than 7 days',\n    }),\n    severity: state.severity ?? NOT_ASKED,\n    warning_signs: warningSigns,\n    pregnancy_or_breastfeeding: state.pregnancy_breastfeeding ?? NOT_ASKED,\n    allergies: history(state.allergy_status, state.allergy_terms),\n    medicines: history(state.medication_status, state.medication_terms),\n    conditions: history(state.condition_status, state.condition_terms),\n  };\n}\n\nfunction responseBase(sessionId, state) {\n  return {\n    api_version: '1.0',\n    session_id: sessionId,\n    research_mode: true,\n    dispense_authorized: false,\n    needs_catalog: false,\n    turns: state.turns,\n    elapsed_ms: Math.max(0, Date.now() - (state.started_at_ms || Date.now())),\n    state,\n  };\n}\n\nfunction questionResponse(sessionId, state, error = null) {\n  return [{\n    json: {\n      ...responseBase(sessionId, state),\n      outcome: 'MORE_INFORMATION',\n      message: error || 'Please answer the next question.',\n      screen: screenFor(state.step, error),\n      summary: state.step === 'confirm' ? summaryFor(state) : null,\n    },\n  }];\n}\n\nfunction finalResponse(sessionId, state, outcome, message, reasonCodes) {\n  state.completed = true;\n  state.step = 'complete';\n  return [{\n    json: {\n      ...responseBase(sessionId, state),\n      outcome,\n      message,\n      reason_codes: reasonCodes,\n      screen: {\n        question_id: 'complete',\n        type: 'result',\n        title: outcome === 'IMMEDIATE_MEDICAL_CARE' ? 'Medical care is needed' : 'No automatic recommendation',\n        options: [option('restart', 'Start a new assessment')],\n      },\n      summary: summaryFor(state),\n    },\n  }];\n}\n\nfunction nextAfterHistory(state) {\n  state.step = 'confirm';\n}\n\nfunction referralUncertainHistory(sessionId, state) {\n  return finalResponse(\n    sessionId,\n    state,\n    'CLINIC_REFERRAL',\n    'More certain allergy, medicine and health-condition information is required. Please visit a nearby clinic, doctor or pharmacy for advice.',\n    ['medical_history_uncertain'],\n  );\n}\n\nfunction evaluateBeforeCatalog(sessionId, state) {\n  if (state.pathway_code === 'other') {\n    return finalResponse(\n      sessionId,\n      state,\n      'NO_SUITABLE_PRODUCT',\n      'This symptom is outside the currently supported pathways. Please visit a nearby clinic, doctor or pharmacy for advice.',\n      ['unsupported_pathway'],\n    );\n  }\n  if (state.warning_signs !== false) {\n    return finalResponse(\n      sessionId,\n      state,\n      'IMMEDIATE_MEDICAL_CARE',\n      'This may require immediate medical attention. Please seek care at the nearest emergency department or clinic.',\n      ['warning_sign_reported_or_uncertain'],\n    );\n  }\n  if (state.severity === 'severe') {\n    return finalResponse(\n      sessionId,\n      state,\n      'CLINIC_REFERRAL',\n      'This machine cannot recommend a medicine for a severe symptom. Please visit a nearby clinic or doctor.',\n      ['severe_symptom'],\n    );\n  }\n  if (state.age_years < 18) {\n    return finalResponse(\n      sessionId,\n      state,\n      'CLINIC_REFERRAL',\n      'The current automated assessment is limited to adults aged 18 or older. Please visit a nearby clinic, doctor or pharmacy for advice.',\n      ['under_18'],\n    );\n  }\n  if (state.duration_code === 'more_than_7_days') {\n    return finalResponse(\n      sessionId,\n      state,\n      'CLINIC_REFERRAL',\n      'The symptom has lasted longer than the current self-care pathway supports. Please visit a nearby clinic or doctor.',\n      ['duration_outside_pathway'],\n    );\n  }\n  if (!['no', 'not_applicable'].includes(state.pregnancy_breastfeeding)) {\n    return finalResponse(\n      sessionId,\n      state,\n      'CLINIC_REFERRAL',\n      'This machine cannot automatically recommend a medicine during pregnancy or breastfeeding, or when this information is uncertain. Please visit a nearby clinic, doctor or pharmacy for advice.',\n      ['pregnancy_breastfeeding_or_uncertain'],\n    );\n  }\n  if ([state.allergy_status, state.medication_status, state.condition_status].includes('not_sure')) {\n    return referralUncertainHistory(sessionId, state);\n  }\n\n  state.completed = true;\n  state.step = 'complete';\n  return [{\n    json: {\n      ...responseBase(sessionId, state),\n      outcome: 'CATALOG_CHECK_REQUIRED',\n      message: 'Safety intake completed. Checking the approved product catalogue.',\n      reason_codes: [],\n      needs_catalog: true,\n      pathway_code: state.pathway_code,\n      screen: null,\n      summary: summaryFor(state),\n    },\n  }];\n}\n\nconst payload = parsePayload(rawItem);\nconst countryCode = /^[A-Z]{2}$/.test(payload.country_code) ? payload.country_code : 'MA';\nconst languageCode = /^[a-z]{2}(?:-[A-Z]{2})?$/.test(payload.language_code) ? payload.language_code : 'en';\nconst id = sessionKey(payload.session_id);\nconst reset = payload.reset === true || payload.answer?.value === 'restart';\nconst state = reset ? newState(countryCode, languageCode) : sanitizeState(payload.state, countryCode, languageCode);\nconst answer = payload.answer && typeof payload.answer === 'object' ? payload.answer : {};\nconst questionId = cleanText(answer.question_id, 60);\nconst value = answer.value;\n\nif (reset || !payload.state) return questionResponse(id, state);\nif (state.completed) return questionResponse(id, newState(countryCode, languageCode));\nif (state.turns >= 30) {\n  return finalResponse(id, state, 'CLINIC_REFERRAL', 'The assessment session limit was reached. Please visit a nearby clinic, doctor or pharmacy for advice.', ['session_limit']);\n}\n\nif (questionId !== state.step) {\n  return questionResponse(id, state, 'That answer does not match the current question. Please try again.');\n}\n\nstate.turns += 1;\n\nswitch (state.step) {\n  case 'symptom': {\n    const selected = cleanText(value, 60);\n    if (!PATHWAY_CODES.has(selected)) return questionResponse(id, state, 'Please choose one of the available symptom categories.');\n    state.pathway_code = selected;\n    if (selected === 'other') {\n      return finalResponse(\n        id,\n        state,\n        'NO_SUITABLE_PRODUCT',\n        'This symptom is outside the currently supported pathways. Please visit a nearby clinic, doctor or pharmacy for advice.',\n        ['unsupported_pathway'],\n      );\n    }\n    state.step = 'age';\n    return questionResponse(id, state);\n  }\n  case 'age': {\n    const age = typeof value === 'number' ? value : Number(String(value).trim());\n    if (!Number.isInteger(age) || age < 0 || age > 120) return questionResponse(id, state, 'Enter an age from 0 to 120.');\n    state.age_years = age;\n    if (age < 18) {\n      return finalResponse(\n        id,\n        state,\n        'CLINIC_REFERRAL',\n        'The current automated assessment is limited to adults aged 18 or older. Please visit a nearby clinic, doctor or pharmacy for advice.',\n        ['under_18'],\n      );\n    }\n    state.step = 'duration';\n    return questionResponse(id, state);\n  }\n  case 'duration': {\n    const selected = cleanText(value, 40);\n    if (!DURATION_CODES.has(selected)) return questionResponse(id, state, 'Please choose a duration.');\n    state.duration_code = selected;\n    if (selected === 'more_than_7_days') {\n      return finalResponse(\n        id,\n        state,\n        'CLINIC_REFERRAL',\n        'The symptom has lasted longer than the current self-care pathway supports. Please visit a nearby clinic or doctor.',\n        ['duration_outside_pathway'],\n      );\n    }\n    state.step = 'severity';\n    return questionResponse(id, state);\n  }\n  case 'severity': {\n    const selected = cleanText(value, 30);\n    if (!SEVERITY_CODES.has(selected)) return questionResponse(id, state, 'Please choose mild, moderate or severe.');\n    state.severity = selected;\n    if (selected === 'severe') {\n      return finalResponse(\n        id,\n        state,\n        'CLINIC_REFERRAL',\n        'This machine cannot recommend a medicine for a severe symptom. Please visit a nearby clinic or doctor.',\n        ['severe_symptom'],\n      );\n    }\n    state.step = 'warning_signs';\n    return questionResponse(id, state);\n  }\n  case 'warning_signs': {\n    const selected = cleanText(value, 30);\n    if (!['yes', 'no', 'not_sure'].includes(selected)) return questionResponse(id, state, 'Please choose yes, no or not sure.');\n    state.warning_signs_answer = selected;\n    if (selected !== 'no') {\n      state.warning_signs = selected === 'yes';\n      return finalResponse(\n        id,\n        state,\n        'IMMEDIATE_MEDICAL_CARE',\n        'This may require immediate medical attention. Please seek care at the nearest emergency department or clinic.',\n        [selected === 'yes' ? 'warning_sign_reported' : 'warning_sign_uncertain'],\n      );\n    }\n    state.warning_signs = false;\n    state.step = 'pregnancy_breastfeeding';\n    return questionResponse(id, state);\n  }\n  case 'pregnancy_breastfeeding': {\n    const selected = cleanText(value, 40);\n    if (!PREGNANCY_CODES.has(selected)) return questionResponse(id, state, 'Please choose one of the available options.');\n    state.pregnancy_breastfeeding = selected;\n    if (!['no', 'not_applicable'].includes(selected)) {\n      return finalResponse(\n        id,\n        state,\n        'CLINIC_REFERRAL',\n        'This machine cannot automatically recommend a medicine during pregnancy or breastfeeding, or when this information is uncertain. Please visit a nearby clinic, doctor or pharmacy for advice.',\n        ['pregnancy_breastfeeding_or_uncertain'],\n      );\n    }\n    state.step = 'allergy_status';\n    return questionResponse(id, state);\n  }\n  case 'allergy_status': {\n    const selected = cleanText(value, 20);\n    if (!YES_NO_UNSURE.has(selected)) return questionResponse(id, state, 'Please choose yes, no or not sure.');\n    state.allergy_status = selected;\n    if (selected === 'not_sure') return referralUncertainHistory(id, state);\n    state.step = selected === 'yes' ? 'allergy_terms' : 'medication_status';\n    return questionResponse(id, state);\n  }\n  case 'allergy_terms': {\n    const terms = cleanList(value);\n    if (!terms.length) return questionResponse(id, state, 'Enter at least one medicine or ingredient allergy.');\n    state.allergy_terms = terms;\n    state.step = 'medication_status';\n    return questionResponse(id, state);\n  }\n  case 'medication_status': {\n    const selected = cleanText(value, 20);\n    if (!YES_NO_UNSURE.has(selected)) return questionResponse(id, state, 'Please choose yes, no or not sure.');\n    state.medication_status = selected;\n    if (selected === 'not_sure') return referralUncertainHistory(id, state);\n    state.step = selected === 'yes' ? 'medication_terms' : 'condition_status';\n    return questionResponse(id, state);\n  }\n  case 'medication_terms': {\n    const terms = cleanList(value);\n    if (!terms.length) return questionResponse(id, state, 'Enter at least one current medicine.');\n    state.medication_terms = terms;\n    state.step = 'condition_status';\n    return questionResponse(id, state);\n  }\n  case 'condition_status': {\n    const selected = cleanText(value, 20);\n    if (!YES_NO_UNSURE.has(selected)) return questionResponse(id, state, 'Please choose yes, no or not sure.');\n    state.condition_status = selected;\n    if (selected === 'not_sure') return referralUncertainHistory(id, state);\n    if (selected === 'yes') state.step = 'condition_terms';\n    else nextAfterHistory(state);\n    return questionResponse(id, state);\n  }\n  case 'condition_terms': {\n    const terms = cleanList(value);\n    if (!terms.length) return questionResponse(id, state, 'Enter at least one medical condition.');\n    state.condition_terms = terms;\n    nextAfterHistory(state);\n    return questionResponse(id, state);\n  }\n  case 'confirm': {\n    const selected = normalize(value);\n    if (selected === 'no') return questionResponse(id, newState(countryCode, languageCode));\n    if (selected !== 'yes') return questionResponse(id, state, 'Please confirm your answers or start again.');\n    state.confirmed = true;\n    return evaluateBeforeCatalog(id, state);\n  }\n  default:\n    return questionResponse(id, newState(countryCode, languageCode));\n}\n\n"
+      },
+      "id": "40e0b56e-3f15-4482-91ff-ade80c91dd4b",
+      "name": "Intake and Safety Engine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -520,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "9c47de34-6633-4050-a4ae-07207c3f305f",
+              "leftValue": "={{ $json.needs_catalog === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "9788f1e9-5e3b-4792-8282-c40e7388f128",
+      "name": "Needs Approved Product Catalog?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -280,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "recommendable_product_pathways",
+        "returnAll": true,
+        "orderBy": "display_priority.asc,product_name.asc",
+        "filterType": "none"
+      },
+      "id": "dbe9157b-dd23-4f72-8501-8130245be232",
+      "name": "Load Approved Products from Supabase",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        0
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "credentials": {
+        "supabaseApi": {
+          "id": "2LlBAYIF92xtHmcJ",
+          "name": "PILLPALL CHATBOT"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * PILLPAL MedAssist - deterministic product matcher.\n * n8n Code node: Run Once for All Items.\n */\n\nconst intake = $('Intake and Safety Engine').first().json;\nconst items = typeof $input.all === 'function' ? $input.all() : [$input.first()];\nconst firstJson = items[0]?.json || {};\nconst state = intake.state || {};\n\nlet rows = [];\nlet catalogError = null;\n\nif (firstJson.error) {\n  catalogError = typeof firstJson.error === 'object' ? (firstJson.error.message || JSON.stringify(firstJson.error)) : String(firstJson.error);\n} else if (Array.isArray(firstJson.body)) {\n  rows = firstJson.body;\n  if (Number(firstJson.statusCode || 200) >= 400) {\n    catalogError = `Supabase REST status ${firstJson.statusCode}`;\n  }\n} else if (Array.isArray(firstJson)) {\n  rows = firstJson;\n} else {\n  rows = items.map(item => item?.json).filter(r => r && (r.id || r.product_name || r.sku));\n}\n\nfunction cleanText(value, maxLength = 240) {\n  return String(value ?? '').replace(/[<>\\u0000-\\u001f]/g, ' ').replace(/\\s+/g, ' ').trim().slice(0, maxLength);\n}\n\nfunction normalize(value) {\n  return cleanText(value, 300).normalize('NFKD').replace(/\\p{M}/gu, '').toLowerCase();\n}\n\nfunction termsFromRules(value) {\n  if (!Array.isArray(value)) return [];\n  const output = [];\n  for (const item of value) {\n    if (typeof item === 'string') output.push(item);\n    else if (item && typeof item === 'object') {\n      for (const key of ['term', 'name', 'label']) if (typeof item[key] === 'string') output.push(item[key]);\n      for (const key of ['terms', 'keywords', 'aliases']) {\n        if (Array.isArray(item[key])) output.push(...item[key].filter(v => typeof v === 'string'));\n      }\n    }\n  }\n  return [...new Set(output.map(normalize).filter(Boolean))];\n}\n\nfunction conflicts(patientTerms, ruleTerms) {\n  const patient = (Array.isArray(patientTerms) ? patientTerms : []).map(normalize).filter(Boolean);\n  const rules = termsFromRules(ruleTerms);\n  return patient.some(p => rules.some(r => p.includes(r) || r.includes(p)));\n}\n\nfunction timing() {\n  const started = Number(state.started_at_ms);\n  const now = Date.now();\n  return { elapsed_ms: Number.isFinite(started) && started > 0 && started <= now ? now - started : 0 };\n}\n\nfunction noProduct(message, reasonCodes, detail = null) {\n  return [{\n    json: {\n      ...intake,\n      ...timing(),\n      needs_catalog: false,\n      outcome: 'NO_SUITABLE_PRODUCT',\n      message,\n      reason_codes: reasonCodes,\n      dispense_authorized: false,\n      product: null,\n      screen: {\n        question_id: 'complete',\n        type: 'result',\n        title: 'No suitable approved product',\n        options: [{ value: 'restart', label: 'Start a new assessment' }],\n      },\n      system_detail: detail,\n    },\n  }];\n}\n\nif (catalogError) {\n  return noProduct(\n    'The approved product catalogue is temporarily unavailable. No medicine can be recommended. Please visit a nearby clinic, doctor or pharmacy for advice.',\n    ['catalog_unavailable'],\n    catalogError,\n  );\n}\n\nconst stateLanguage = String(state.language_code || '').split('-')[0];\nconst filteredRows = rows.filter(r =>\n  (!r.pathway_code || r.pathway_code === state.pathway_code) &&\n  (!r.country_code || r.country_code === state.country_code) &&\n  (!r.language_code || !stateLanguage || r.language_code === stateLanguage)\n);\n\nif (!filteredRows.length) {\n  return noProduct(\n    'No clinically and legally approved product is currently enabled for this symptom pathway. Please visit a nearby clinic, doctor or pharmacy for advice.',\n    ['no_approved_product_for_pathway'],\n  );\n}\n\nconst evaluated = filteredRows\n  .sort((a, b) => Number(a.display_priority || 100) - Number(b.display_priority || 100))\n  .map(product => {\n    const reasons = [];\n    const ageMonths = Number(state.age_years) * 12;\n    if (product.minimum_age_months != null && ageMonths < Number(product.minimum_age_months)) reasons.push('below_minimum_age');\n    if (product.maximum_age_years != null && Number(state.age_years) > Number(product.maximum_age_years)) reasons.push('above_maximum_age');\n    if (conflicts(state.allergy_terms, product.allergy_terms)) reasons.push('allergy_conflict');\n    if (conflicts(state.condition_terms, product.contraindications)) reasons.push('contraindication_conflict');\n    if (conflicts(state.medication_terms, product.interaction_rules)) reasons.push('medicine_interaction_conflict');\n    if (!product.dose_instructions || typeof product.dose_instructions !== 'object' || !Object.keys(product.dose_instructions).length) reasons.push('missing_approved_dose');\n    return { product, reasons };\n  });\n\nconst selected = evaluated.find(result => result.reasons.length === 0);\nif (!selected) {\n  const ageReasons = new Set(['below_minimum_age', 'above_maximum_age']);\n  const blockedByAgeOnly = evaluated.every(r => r.reasons.length > 0 && r.reasons.every(x => ageReasons.has(x)));\n  return noProduct(\n    blockedByAgeOnly\n      ? 'The approved products for this symptom are suitable for a different age range than the age you entered. Please visit a nearby clinic, doctor or pharmacy for advice.'\n      : 'The available approved products did not pass all safety checks. Please visit a nearby clinic, doctor or pharmacy for advice.',\n    blockedByAgeOnly ? ['age_outside_supported_range', 'all_products_blocked'] : ['all_products_blocked'],\n    evaluated.map(v => ({ product_id: v.product.id, reasons: v.reasons })),\n  );\n}\n\nconst product = selected.product;\nreturn [{\n  json: {\n    ...intake,\n    needs_catalog: false,\n    outcome: 'PRODUCT_ELIGIBLE',\n    message: 'An approved product matched the completed safety assessment. Review the product information before continuing.',\n    reason_codes: ['approved_product_match'],\n    dispense_authorized: false,\n    product: {\n      id: product.id,\n      sku: product.sku,\n      name: product.product_name,\n      brand_name: product.brand_name,\n      active_ingredients: product.active_ingredients,\n      strength: product.strength_label,\n      dosage_form: product.dosage_form,\n      route: product.route,\n      pack_size: product.pack_size,\n      instructions: product.dose_instructions,\n      warnings: product.warnings,\n      maximum_duration_days: product.maximum_duration_days,\n      label_url: product.label_url,\n      label_version: product.label_version,\n      product_version: product.product_version,\n      safety_version: product.safety_version,\n    },\n    screen: {\n      question_id: 'complete',\n      type: 'product_result',\n      title: product.product_name,\n      options: [{ value: 'restart', label: 'Start a new assessment' }],\n    },\n    evaluated_products: evaluated.map(v => ({\n      product_id: v.product.id,\n      result: v.product.id === product.id ? 'eligible' : 'not_selected',\n      reasons: v.reasons,\n    })),\n  },\n}];\n\n"
+      },
+      "id": "ab80419e-02e1-4582-8a53-3fe5f3cf746e",
+      "name": "Deterministic Product Matcher",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              },
+              {
+                "name": "X-Content-Type-Options",
+                "value": "nosniff"
+              }
+            ]
+          }
+        }
+      },
+      "id": "ad67ab36-33d5-4dfd-befa-3bfb73d44464",
+      "name": "Return Touchscreen Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        520,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "000bfe47-5571-4d19-93df-834a229bff27",
+              "leftValue": "={{ $json.outcome !== \"MORE_INFORMATION\" }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "f9602ffb-d2bf-4945-a414-bb0c73b1d226",
+      "name": "Assessment Finished?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        760,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "tableId": "kiosk_outcome_log",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "session_key": "={{ $json.session_id }}",
+            "country_code": "={{ ($json.state && $json.state.country_code) || \"MA\" }}",
+            "language_code": "={{ ($json.state && $json.state.language_code) || \"en\" }}",
+            "pathway_code": "={{ ($json.state && $json.state.pathway_code) || \"none\" }}",
+            "age_band": "={{ !$json.state || typeof $json.state.age_years !== \"number\" ? \"unknown\" : $json.state.age_years < 18 ? \"under_18\" : $json.state.age_years <= 30 ? \"18_30\" : $json.state.age_years <= 45 ? \"31_45\" : $json.state.age_years <= 65 ? \"46_65\" : \"over_65\" }}",
+            "duration_code": "={{ ($json.state && $json.state.duration_code) || \"unknown\" }}",
+            "severity": "={{ ($json.state && $json.state.severity) || \"unknown\" }}",
+            "outcome": "={{ $json.outcome }}",
+            "reasons": "={{ ($json.reason_codes || []).join(\",\") }}",
+            "turns": "={{ $json.turns || 0 }}",
+            "elapsed_ms": "={{ $json.elapsed_ms || 0 }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "cedb0119-0f7e-43df-aaaf-c7760e364a89",
+      "name": "Log Outcome (anonymised)",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        1000,
+        40
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "supabaseApi": {
+          "id": "2LlBAYIF92xtHmcJ",
+          "name": "PILLPALL CHATBOT"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Chat Turn Webhook": {
+      "main": [
+        [
+          {
+            "node": "Intake and Safety Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intake and Safety Engine": {
+      "main": [
+        [
+          {
+            "node": "Needs Approved Product Catalog?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Approved Product Catalog?": {
+      "main": [
+        [
+          {
+            "node": "Load Approved Products from Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Touchscreen Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Approved Products from Supabase": {
+      "main": [
+        [
+          {
+            "node": "Deterministic Product Matcher",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deterministic Product Matcher": {
+      "main": [
+        [
+          {
+            "node": "Return Touchscreen Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Return Touchscreen Response": {
+      "main": [
+        [
+          {
+            "node": "Assessment Finished?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assessment Finished?": {
+      "main": [
+        [
+          {
+            "node": "Log Outcome (anonymised)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "40c0241a-76ae-4137-9e32-2c0a4944c4eb",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "nodeGroups": [],
+  "id": "14542001b73947c7",
+  "tags": []
+}
