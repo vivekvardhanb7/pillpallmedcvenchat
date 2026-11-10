@@ -10,6 +10,7 @@
     "test": "node scripts/test-n8n-engine.mjs && node scripts/test-safety-germany.mjs && node scripts/test-natural-conversation.mjs && node scripts/test-answer-understanding.mjs && node scripts/test-understand-sidecar.mjs && node scripts/test-i18n.mjs && node scripts/test-voice-mapper.mjs && node scripts/test-voice-lifecycle.mjs && node scripts/test-local-whisper-lifecycle.mjs && node scripts/test-session-audio-cleanup.mjs && node scripts/test-hands-free-conversation.mjs && node scripts/test-gemini-live-transcriber.mjs && node scripts/test-phone-call-barge-in.mjs && node scripts/test-acoustic-interruption.mjs && node scripts/test-interrupted-safety-prompts.mjs && node scripts/test-voice-interface.mjs && node scripts/check-workflow-drift.mjs && node scripts/test-local-engine.mjs && node scripts/test-server-offline-endpoints.mjs && node scripts/test-rag-integration.mjs && node scripts/test-rag-direct-flow.mjs",
     "doctor:voice": "node scripts/check-voice-setup.mjs",
     "test:voice:audio": "node scripts/test-local-speech-roundtrip.mjs",
+    "test:voice:live": "node scripts/test-voice-chat-comprehensive.mjs",
     "test:conversation": "node scripts/test-natural-conversation.mjs",
     "test:journeys": "node scripts/test-customer-journeys.mjs",
     "test:journeys:live": "node scripts/test-customer-journeys.mjs --live",
