@@ -28,7 +28,7 @@ export function createSessionManager(processTurn, { country = 'DE', ttlMs = 1200
         language_code: /^[a-z]{2}(?:-[A-Z]{2})?$/.test(body.language_code) ? body.language_code : 'de',
         reset: fresh,
         mode: body.mode,
-        query: body.query || body.answer?.text || (typeof body.answer?.value === 'string' ? body.answer.value : undefined),
+        query: body.query || (body.mode === 'rag' ? (body.answer?.text || body.answer?.value) : undefined),
         state: fresh ? null : structuredClone(previous.result.state),
         answer: fresh ? null : body.answer,
       });

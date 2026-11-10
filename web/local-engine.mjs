@@ -220,7 +220,7 @@ export async function processRagTurn(body) {
 }
 
 export async function processChatTurn(body) {
-  if (body?.mode === 'rag' || body?.query || body?.answer?.question_id === 'rag_consultation') {
+  if (body?.mode === 'rag' || body?.answer?.question_id === 'rag_consultation') {
     return await processRagTurn(body);
   }
   const inputForIntake = { first: () => ({ json: { body } }) };
