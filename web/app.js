@@ -1033,7 +1033,9 @@ async function callWorkflow({ answer = null, reset = false } = {}) {
     country_code: config.countryCode || 'DE',
     language_code: activeLanguage(),
     reset,
+    mode: 'rag',
     answer,
+    query: answer?.text || answer?.value || (typeof answer === 'string' ? answer : undefined),
   };
 
   try {
@@ -1726,7 +1728,7 @@ function renderQuestion() {
       ${screen.error ? `<div class="error-message">${escapeHtml(screen.error)}</div>` : ''}
       ${rememberedNoticeHtml}
       ${current.summary ? renderSummary(current.summary) : ''}
-      ${['single_select', 'confirmation'].includes(screen.type)
+      ${['single_select', 'confirmation', 'free_text'].includes(screen.type)
         ? renderOptions(screen)
         : `<p class="input-guidance">${escapeHtml(t('speech.inputGuidance', currentLanguage))}</p>`}
     </section>`;
@@ -2023,6 +2025,10 @@ async function handleNaturalLanguageAnswer(text, source, image = null) {
       return;
     }
     hideAnswerConfirmation();
+  }
+  if (current?.screen?.question_id === 'rag_consultation' || current?.mode === 'rag_direct' || current?.screen?.type === 'free_text') {
+    callWorkflow({ answer: { question_id: 'rag_consultation', value: text, text } });
+    return;
   }
   const screen = localizeScreen(current.screen, currentLanguage);
   const conversationalReply = conversationalReplyFor(text, screen);
