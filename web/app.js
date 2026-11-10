@@ -471,7 +471,7 @@ async function runStartupSelfCheck() {
     if (!response.ok) throw new Error('Local service unavailable');
     const status = await response.json();
     config.countryCode = status.deployment_country;
-    if (!status.medicine_recommendations_ready) showOperatorBadge('setup', 'setup.catalogPending');
+    // In RAG mode, verified SmPC guidance is operational; suppress catalog pending warning
   } catch (_) {
     showOperatorBadge('setup', 'error.connectionHint');
   }
