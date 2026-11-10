@@ -11,10 +11,18 @@ import {
   t,
 } from '../web/i18n.js';
 
-assert.deepEqual(LANGUAGES.map(language => language.code), ['en', 'de']);
+const languageCodes = LANGUAGES.map(language => language.code);
+assert.equal(languageCodes[0], 'auto');
+assert.equal(new Set(languageCodes).size, languageCodes.length);
+for (const required of ['en', 'de', 'tr', 'ar', 'uk', 'pl', 'ru', 'ro', 'fr', 'fa', 'ur', 'hi', 'te', 'ku', 'ps', 'so', 'vi']) {
+  assert.ok(languageCodes.includes(required), `missing common Germany language ${required}`);
+}
+assert.equal(languageByCode('auto').code, 'auto');
+assert.equal(languageByCode('fr-FR').code, 'fr');
 assert.equal(languageByCode('de-DE').code, 'de');
 assert.equal(speechLocale('de'), 'de-DE');
 assert.equal(speechLocale('en'), 'en-US');
+assert.equal(speechLocale('ar'), 'ar-MA');
 
 assert.equal(detectLanguage('I have a headache'), 'en');
 assert.equal(detectLanguage('I am not pregnant'), 'en');

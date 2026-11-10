@@ -18,9 +18,13 @@ snapshot from before this work and is kept for the evidence trail.
 | Deployed vs repository | `npm run check -- --live` reports MATCH on all 7 code nodes of both workflows |
 | Spoken-answer understanding | New. French, Darija and MSA answers map onto on-screen values in ~0.9-1.5 s, always read back before use. Two routes: the kiosk's own `/api/understand` bridge and a Gemini sidecar inside n8n (`Tq1UTgrin8HYd9s6`), which is what the kiosk currently uses |
 | Safety path | Unchanged. No model reaches a decision; `dispense_authorized` is still `false` everywhere |
+| Real medicine coverage | **Drafted, not approved.** `009_real_products_draft.sql` adds 16 real medicines for `MA` (4 shortlisted brands + 12 reference presentations) with dose, age, duration, contraindication, allergy and interaction facts transcribed from published SmPCs/leaflets on 2026-11-04. All are `in_review`, `chatbot_enabled = false`, reviewer columns NULL - the signature is yours (M11). Five rows still have `maximum_duration_days` NULL (cetirizine, loratadine, calcium carbonate, saline, chlorhexidine) and must not be enabled until you set it |
+| DOLIPRANE `product_safety` row | **Corrected by 009 (step 4).** It previously read `review_status = approved` with reviewer `Dr. Test Reviewer` (a string that appears nowhere in the repo), source `https://ammps.sante.gov.ma/doliprane-500` (host does not respond) and dose text matching no published leaflet (ANSM RCP: 500-1000 mg/dose, >=4 h apart, max 3 g/day). 009 replaces it with the ANSM-sourced row, demotes it to `in_review` and records the unverifiable provenance in the row's own warnings |
+| Enable gate | **Defeatable.** `enforce_product_safety_before_enable` trusts `review_status` alone: it ignores `products.clinical_status`/`legal_status` (both `draft`), accepts any reviewer string, and cannot check that the source resolves. One `UPDATE` would publish the row above |
 
 Open items are in section 9 (M8, M9) and section 10 (decisions C, F, G still
-unanswered).
+unanswered). `docs/PILLPAL-project-guide.pdf` is the current-state guide written
+from live data on 2026-11-04, including the symptom and medicine coverage tables.
 
 ---
 
@@ -190,7 +194,7 @@ unanswered).
 
 ## 8. Phase 6 — Product data and vending readiness
 *Blocked on clinical + legal review, not on code.*
-- **T22** Leaflets in Supabase Storage (AMMPS has no per-product PDFs; use ANSM notices) + `label_url` must be `http(s)`.
+- **T22** Leaflets in Supabase Storage + `label_url` must be `http(s)`. Reachable sources measured 2026-11-04: `medicines.org.uk` (EMC SmPCs), `nhs.uk`, `base-donnees-publique.medicaments.gouv.fr`, `ansm.sante.fr`, `docetp.mpa.se` all serve content; `ammps.org` and `guichet.sante.gov.ma` do not respond at all, so Moroccan AMM verification has to be done by hand at the counter or from a supplied leaflet.
 - **T23** Stock and price columns (pre-vending only; `dispense_authorized` stays `false`).
 - **T24** Clinic referral reference code on the terminal screen.
 - **T25** Brief speech mode for noisy pharmacies.
@@ -212,6 +216,7 @@ unanswered).
 | M8 | Delete the 5 early test rows from the outcome log — `service_role` has only `select, insert`, so REST cannot do it: `delete from public.kiosk_outcome_log where session_key = 'session_invalid';` | Supabase SQL Editor |
 | M9 | Before real customers: set a short n8n execution-data retention window (spoken answers are stored in execution data), and write down the loi 09-08 / GDPR position on sending a symptom to Gemini | n8n → Settings; legal note |
 | M10 | Rotate `webhookSecret` — the old value was written in plain text into `PLAN.md` and ships in `web/config.js` anyway | n8n credential + `web/config.js` |
+| M11 | Run `supabase/migrations/009_real_products_draft.sql`, read the cited leaflet for each product you intend to ship, set the 5 NULL `maximum_duration_days` (`MA-RESEARCH-ZYRTEC-10`, `MA-LORATADINE-TAB-10`, `MA-CALCIUM-CARBONATE-500`, `MA-SALINE-NASAL-09`, `MA-CHLORHEXIDINE-SOL-05`), then run the commented sign-off block in step 7 with your own name. Until you do, `MA` still returns `no_approved_product_for_pathway` and the demo keeps using `ZZ` | Supabase SQL Editor |
 
 ---
 

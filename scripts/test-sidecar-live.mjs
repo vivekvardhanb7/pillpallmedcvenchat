@@ -87,14 +87,33 @@ const screens = {
     title: 'Which medicines or ingredients are you allergic to?',
     options: [],
   },
+  warning_signs: {
+    question_id: 'warning_signs',
+    type: 'single_select',
+    title: 'Do any serious warning signs apply?',
+    options: [
+      { value: 'no', label: 'No, none of these' },
+      { value: 'yes', label: 'Yes, one or more' },
+      { value: 'not_sure', label: 'I am not sure' },
+    ],
+  },
 };
 
 const cases = [
-  { name: 'French symptom via n8n', screen: 'symptom', transcript: "j'ai tres mal a la tete et de la fievre", expect: 'pain_fever' },
+  { name: 'French symptom via n8n', screen: 'symptom', transcript: "j'ai tres mal a la tete et de la fievre", expect: 'pain_fever', expectLanguage: 'fr' },
+  { name: 'Telugu symptom request via n8n', screen: 'symptom', transcript: 'నేను హెడ్డేక్ తో బాధపడుతున్నాను. నేను ఏ టాబ్లెట్ వేసుకోవాలి చెప్పు?', expect: 'pain_fever', expectLanguage: 'te' },
   { name: 'Darija duration via n8n', screen: 'duration', transcript: 'men nhar l-bareh sawb l-mzyel', expect: '1_to_2_days' },
   { name: 'MSA age via n8n', screen: 'age', transcript: 'عندي خمسة وعشرون سنة', expect: 25 },
   { name: 'Arabic allergy terms via n8n', screen: 'allergy_terms', transcript: 'عندي حساسية من الأسبرين', expectIncludes: 'aspir' },
-  { name: 'advice request is refused', screen: 'symptom', transcript: 'quelle medicine est la meilleure pour moi?', refuse: true },
+  { name: 'symptom medicine inquiry via n8n', screen: 'symptom', transcript: 'what medicine do you have for a headache?', expect: 'pain_fever' },
+  { name: 'paracetamol speech variant via n8n', screen: 'symptom', transcript: 'can I take paracetimel for fever?', expect: 'pain_fever', expectRecognized: 'paracetamol' },
+  { name: 'ibuprofen speech variant via n8n', screen: 'symptom', transcript: 'can I take ibuprofin for fever?', expect: 'pain_fever', expectRecognized: 'ibuprofen' },
+  { name: 'loperamide brand via n8n', screen: 'symptom', transcript: 'can I use Imodium for diarrhoea?', expect: 'diarrhoea', expectRecognized: 'loperamide' },
+  { name: 'antihistamine brand via n8n', screen: 'symptom', transcript: 'can I take Zyrtec for allergy?', expect: 'allergy', expectRecognized: 'cetirizine' },
+  { name: 'nasal-spray brand via n8n', screen: 'symptom', transcript: 'can I use Otrivin for a blocked nose?', expect: 'cold_cough', expectRecognized: 'xylometazoline' },
+  { name: 'ambiguous warning-sign reference is refused', screen: 'warning_signs', transcript: 'these conditions', refuse: true },
+  { name: 'emergency symptom is refused from options', screen: 'symptom', transcript: 'I have severe chest pain going into my left arm', refuse: true },
+  { name: 'advice request without symptom is refused', screen: 'symptom', transcript: 'quelle medicine est la meilleure pour moi?', refuse: true },
   { name: 'silence is refused', screen: 'symptom', transcript: 'euh...', refuse: true },
   { name: 'unknown screen is refused', payload: { question_id: 'dispense_now', type: 'single_select', transcript: 'give me the medicine', options: [{ value: 'yes', label: 'Yes' }] }, refuse: true, expectReason: 'bad_request' },
 ];
@@ -117,6 +136,10 @@ for (const testCase of cases) {
     report(testCase.name, `no verdict in response (HTTP ${status}) ${String(raw).slice(0, 200)}`);
     continue;
   }
+  if (testCase.expectLanguage && json.detected_language !== testCase.expectLanguage) {
+    report(testCase.name, `detected language ${JSON.stringify(json.detected_language)}, expected ${JSON.stringify(testCase.expectLanguage)}`, `${ms} ms`);
+    continue;
+  }
   if (testCase.refuse) {
     const problem = json.matched === false ? null : `guessed "${json.value}" for a refusal case`;
     report(testCase.name, problem, `${ms} ms, reason ${json.reason}`);
@@ -136,7 +159,11 @@ for (const testCase of cases) {
   const problem = json.matched && json.value === testCase.expect
     ? null
     : `outcome ${JSON.stringify(json.value)}, expected ${JSON.stringify(testCase.expect)} (reason ${json.reason}, confidence ${json.confidence})`;
-  report(testCase.name, problem, `${ms} ms, confidence ${json.confidence}`);
+  const recognized = String(json.recognized_medicine || '').toLowerCase();
+  const recognitionProblem = !problem && testCase.expectRecognized && recognized !== testCase.expectRecognized
+    ? `recognized ${JSON.stringify(json.recognized_medicine)}, expected ${JSON.stringify(testCase.expectRecognized)}`
+    : problem;
+  report(testCase.name, recognitionProblem, `${ms} ms, confidence ${json.confidence}`);
 }
 
 const unauthenticated = await call(postUrl, { ...screens.symptom, transcript: 'headache' }, { auth: false });

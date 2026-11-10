@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PILLPAL MedAssist - Project Guide</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", Arial, sans-serif;
+    color: #1d2529; font-size: 10.2pt; line-height: 1.45; margin: 0;
+  }
+  h1 { font-size: 21pt; margin: 0 0 4mm; color: #0d3b52; }
+  h2 {
+    font-size: 13pt; margin: 8mm 0 2.5mm; padding-bottom: 1.2mm;
+    border-bottom: 0.6mm solid #0d3b52; color: #0d3b52;
+    page-break-after: avoid;
+  }
+  h3 { font-size: 11pt; margin: 5mm 0 1.5mm; color: #12506b; page-break-after: avoid; }
+  p, li { margin: 0 0 2mm; }
+  ul, ol { margin: 0 0 2.5mm 5mm; padding: 0; }
+  li { margin-bottom: 1.2mm; }
+  table { width: 100%; border-collapse: collapse; margin: 2mm 0 4mm; font-size: 9.2pt; }
+  th {
+    background: #0d3b52; color: #fff; text-align: left;
+    padding: 1.8mm 2mm; font-weight: 600;
+  }
+  td { border-bottom: 0.2mm solid #d5dde2; padding: 1.6mm 2mm; vertical-align: top; }
+  tr { page-break-inside: avoid; }
+  thead { display: table-header-group; }
+  tr:nth-child(even) td { background: #f4f7f9; }
+  code, pre { font-family: "Consolas", monospace; font-size: 8.8pt; }
+  code { background: #eef2f5; padding: 0.3mm 1mm; border-radius: 1mm; }
+  pre {
+    background: #f4f7f9; border-left: 1mm solid #0d3b52;
+    padding: 2.2mm 3mm; margin: 0 0 3.5mm; white-space: pre-wrap;
+    page-break-inside: avoid;
+  }
+  .cover { border: 0.6mm solid #0d3b52; padding: 6mm; margin-bottom: 6mm; }
+  .sub { color: #47606e; font-size: 10.5pt; margin-bottom: 4mm; }
+  .meta { font-size: 9pt; color: #5c7280; }
+  .no { color: #a32020; font-weight: 700; }
+  .yes { color: #14663a; font-weight: 700; }
+  .warn { color: #93590a; font-weight: 700; }
+  .alert {
+    background: #fdf1f0; border-left: 1.2mm solid #a32020;
+    padding: 2.5mm 3mm; margin: 0 0 4mm; page-break-inside: avoid;
+  }
+  .note {
+    background: #f0f6fb; border-left: 1.2mm solid #12506b;
+    padding: 2.5mm 3mm; margin: 0 0 4mm; page-break-inside: avoid;
+  }
+  .ok {
+    background: #f1f8f3; border-left: 1.2mm solid #14663a;
+    padding: 2.5mm 3mm; margin: 0 0 4mm; page-break-inside: avoid;
+  }
+  .pagebreak { page-break-before: always; }
+  .kv { width: 100%; font-size: 9.4pt; }
+  .kv td:first-child { width: 34%; font-weight: 600; color: #12506b; }
+  .foot { margin-top: 8mm; font-size: 8.6pt; color: #6b7f8a; border-top: 0.2mm solid #d5dde2; padding-top: 2mm; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <h1>PILLPAL MedAssist</h1>
+  <div class="sub">Pharmacy vending-kiosk screening assistant - project guide, current state and honest coverage</div>
+  <table class="kv">
+    <tr><td>Project</td><td>PILLPALMEDVEN (<code>V:\LD Projects\PILLPALMEDVEN</code>)</td></tr>
+    <tr><td>Document date</td><td>4 November 2026, after the 3 November overnight build and verification</td></tr>
+    <tr><td>Code state</td><td>Local commit <code>6ab8374</code>, no remote configured, nothing pushed</td></tr>
+    <tr><td>Live deployment</td><td>n8n <code>n8n.naf-cloudsystem.de</code> - safety workflow <code>CtomsWyOIBEuYrtX</code>, understanding sidecar <code>Tq1UTgrin8HYd9s6</code>, both active</td></tr>
+    <tr><td>Headline</td><td><span class="no">The kiosk currently recommends zero medicines to a Moroccan customer.</span> The interview, safety screening and product-matching machinery all work; the product catalogue behind them is empty of approved, enabled medicines.</td></tr>
+  </table>
+</div>
+
+<h2>1. What the system is</h2>
+<p>
+PILLPAL MedAssist is a touchscreen + voice kiosk that runs a guided symptom screening with a customer,
+applies deterministic safety rules, and either names an approved product, refuses to name one, or refers the
+customer to a professional. It <strong>never dispenses</strong> and never authorises dispensing.
+</p>
+
+<h3>Hard invariants (enforced in code and tests, not just policy)</h3>
+<table>
+  <tr><th>Invariant</th><th>How it is held</th></tr>
+  <tr><td>No medicine is ever authorised by the kiosk</td><td><code>dispense_authorized</code> is <code>false</code> on every response; asserted by the offline journey suite ("Nothing ever authorizes dispensing")</td></tr>
+  <tr><td>No language model in the safety, eligibility or product-selection path</td><td>The n8n decision chain is deterministic code. The AI helper sits outside it and only maps one spoken answer to a value already on screen</td></tr>
+  <tr><td>No invented product data</td><td>Product name, strength, dose text and label link all come from Supabase rows. If no approved row matches, the answer is "no suitable product"</td></tr>
+  <tr><td>No diagnosis or prescription</td><td>Wording is limited to symptom relief eligibility and referral; the engine refuses to continue outside its declared clinical scope</td></tr>
+  <tr><td>Real Moroccan medicines stay disabled</td><td>Supabase trigger <code>products_require_approved_safety</code> plus <code>chatbot_enabled = false</code> on all four MA rows</td></tr>
+</table>
+
+<h2>2. How one conversation works</h2>
+<p>Each customer turn is one HTTP POST from the kiosk to the n8n webhook, and one JSON response back.</p>
+<pre>
+Customer speaks / types / taps
+        |
+        v
+[ browser kiosk  web/app.js ]
+   - normalises the answer: taps and keywords first,
+     then (optional) AI helper for hard-to-parse speech
+   - re-validates anything the AI returned against the on-screen options
+        |
+        v
+[ n8n: Chat Turn Webhook ]  header auth, shared secret
+        |
+        v
+[ Intake and Safety Engine ]  deterministic interview, red flags, scope gate
+        |
+        v
+[ Load Catalogue View ] -> Supabase recommendable_product_pathways
+        |
+        v
+[ Deterministic Product Matcher ] age / duration / severity / pregnancy /
+        |                          allergy / interaction / contraindication /
+        |                          indication / max duration
+        v
+[ Build Outcome Log Row ] -> [ Insert Outcome Log Row ]  anonymised counters
+        |
+        v
+Kiosk renders the result + speaks it (Piper neural voice, browser fallback)
+</pre>
+<table>
+  <tr><th>Outcome code</th><th>What the customer sees</th></tr>
+  <tr><td><code>PRODUCT_ELIGIBLE</code></td><td>Named product card with strength, form, approved instructions and a link to the product information</td></tr>
+  <tr><td><code>NO_SUITABLE_PRODUCT</code></td><td>"No suitable approved product" plus the reason category (for example an allergy conflict) and advice to visit a clinic, doctor or pharmacy</td></tr>
+  <tr><td><code>CLINIC_REFERRAL</code></td><td>Stop-and-refer message; the interview ends early on red flags, uncertain history, or an unsupported symptom</td></tr>
+  <tr><td><code>MORE_INFORMATION</code></td><td>A follow-up question because the answer was unusable or out of range</td></tr>
+  <tr><td><code>CATALOG_CHECK_REQUIRED</code></td><td>The catalogue could not be consulted safely, so nothing is recommended</td></tr>
+</table>
+
+<h2 class="pagebreak">3. Features the project has</h2>
+<table>
+  <tr><th>Area</th><th>Feature</th><th>Status</th></tr>
+  <tr><td>Interview</td><td>7-category symptom menu, age, duration, severity, red-flag checklist, pregnancy/breastfeeding, allergies, current medicines, ongoing conditions, review-and-confirm screen</td><td><span class="yes">Live</span></td></tr>
+  <tr><td>Interview</td><td>Early refusal: unsupported symptom, red flags, "not sure" answers end the interview instead of running it to a dead end</td><td><span class="yes">Live</span></td></tr>
+  <tr><td>Interview</td><td>Every interpreted answer is read back for confirmation before it is submitted</td><td><span class="yes">Live</span></td></tr>
+  <tr><td>Safety</td><td>Deterministic matcher: minimum/maximum age, indication match, allergy conflict, interaction rules, contraindications, pregnancy/breastfeeding rules, maximum self-treatment duration, display priority</td><td><span class="yes">Live</span></td></tr>
+  <tr><td>Safety</td><td>Per-pathway red-flag sets (fever and headache have their own, including meningitis and sepsis features)</td><td><span class="yes">Live</span></td></tr>
+  <tr><td>Voice in</td><td>Browser speech recognition, English</td><td><span class="yes">Live</span></td></tr>
+  <tr><td>Voice out</td><td>Local neural female voice via Piper (<code>en_US-hfc_female-medium</code>), browser voice fallback, animated black-and-gold visualiser</td><td><span class="yes">Live</span> (German voice model not downloaded)</td></tr>
+  <tr><td>Language</td><td>English and German UI strings; Arabic and Darija speech understood by the AI helper and normalised into the option values on screen</td><td><span class="yes">Live</span> (German has no product data)</td></tr>
+  <tr><td>AI helper</td><td>Provider-agnostic answer understanding: kiosk-local bridge (Ollama or Gemini) or an n8n sidecar workflow; two-layer validation; low confidence leads to a re-ask, never a guess</td><td><span class="yes">Live</span>, off by default</td></tr>
+  <tr><td>Transparency</td><td>Chronological live transcript panel of the whole conversation</td><td><span class="yes">Live</span></td></tr>
+  <tr><td>Operations</td><td>Self-check screen on load, honest error copy, config watch, inactivity reset (120 s), mute and theme controls</td><td><span class="yes">Live</span></td></tr>
+  <tr><td>Operations</td><td>Anonymised outcome log: country, language, pathway, age band, duration, severity, outcome, reasons, turn count, elapsed milliseconds</td><td><span class="yes">Live</span> (69 rows as of this document)</td></tr>
+  <tr><td>Operations</td><td>Workflow drift check (offline and <code>--live</code> against the deployed n8n), catalogue audit, live smoke test, API push instead of manual re-import</td><td><span class="yes">Live</span></td></tr>
+  <tr><td>Testing</td><td>Engine tests, i18n tests, voice-mapper tests, guardrail tests for the AI, 50 offline customer journeys, 35 live journeys, 14 spoken-answer checks, 10 hosted-sidecar checks, product-path live test</td><td><span class="yes">All green</span></td></tr>
+  <tr><td>Data</td><td>Supabase schema with 15 tables, RLS deny-all, security-invoker views, enable-gating trigger, retention function, research seed data, test fixture</td><td><span class="yes">Live</span></td></tr>
+  <tr><td>Hosting</td><td>Docker Compose for self-hosted n8n; local static server for the kiosk</td><td><span class="yes">Live</span></td></tr>
+</table>
+
+<h2>4. How to use it</h2>
+
+<h3>As a customer</h3>
+<ol>
+  <li>Tap <strong>Tap to Start</strong>. The assistant greets you and asks what it can help with.</li>
+  <li>Answer any way you like: speak, type in the field at the bottom, or tap an option.</li>
+  <li>It asks, in order: symptom category, age, how long, how severe, warning signs, pregnancy or breastfeeding, allergies, current medicines, ongoing conditions.</li>
+  <li>Check the <strong>read-back</strong> ("I understood 34") and tap <strong>Correct</strong> or <strong>Change</strong>.</li>
+  <li>Review your answers on the confirm screen, then tap <strong>Confirm and check products</strong>.</li>
+  <li>You get one of: a named product card, "no suitable approved product" with advice, or a referral to a clinic, doctor or pharmacy. Nothing is dispensed by the kiosk.</li>
+</ol>
+
+<h3>As the operator - first run</h3>
+<pre>
+cd "V:\LD Projects\PILLPALMEDVEN"
+npm install
+copy .env.example .env        &amp;&amp; fill SUPABASE_URL + service-role key
+copy web/config.example.js web/config.js   &amp;&amp; set webhookUrl + webhookSecret
+npm start                     &amp;&amp; open http://localhost:8080
+</pre>
+
+<h3>As the operator - daily checks</h3>
+<pre>
+npm test                      # engine, AI guardrails, sidecar, i18n, voice mapper, drift
+npm run test:journeys         # 50 offline customer journeys
+npm run audit:catalog         # catalogue coverage and enable-gate warnings
+npm run smoke:live            # one real turn against the deployed workflow
+npm run test:journeys:live    # 35 journeys against production (needs PILLPAL_WEBHOOK_SECRET)
+npm run test:ai               # 14 spoken-answer checks through the local bridge
+npm run test:ai:sidecar       # 10 checks against the hosted Gemini sidecar
+npm run check -- --live       # every deployed Code node still matches n8n/src
+npm run build:workflow        # after any n8n/src change
+npm run build:sidecar         # after any change to web/answer-understanding.js
+</pre>
+<p class="meta">
+Optional AI settings live in <code>.env</code>: <code>PILLPAL_AI_PROVIDER=off|ollama|gemini</code>,
+<code>PILLPAL_AI_MIN_CONFIDENCE</code>, <code>PILLPAL_AI_TIMEOUT_MS</code>. To move the model call into n8n
+instead, set <code>understandUrl</code> and <code>understandStatusUrl</code> in <code>web/config.js</code> to the
+two sidecar webhook paths - no code changes, restart not required.
+</p>
+
+<h2 class="pagebreak">5. Which symptoms it can currently handle</h2>
+<p>
+All seven categories stay on the menu so a customer can state their problem and the outcome log records what was
+asked for. Only one is inside the machine's declared clinical scope; the other six are refused on the first tap
+rather than run through an interview that cannot end in a recommendation.
+</p>
+<table>
+  <tr><th>Symptom category</th><th>Pathway code</th><th>In clinical scope</th><th>Pathway enabled in Supabase</th><th>What actually happens</th></tr>
+  <tr><td>Headache, pain or fever</td><td><code>pain_fever</code></td><td><span class="yes">Yes</span></td><td><span class="yes">Yes</span></td><td>Full interview, red-flag screening, product matching</td></tr>
+  <tr><td>Cold or cough</td><td><code>cold_cough</code></td><td><span class="no">No</span></td><td><span class="no">No</span></td><td>Early referral, logged as <code>unsupported_pathway</code></td></tr>
+  <tr><td>Allergy</td><td><code>allergy</code></td><td><span class="no">No</span></td><td><span class="no">No</span></td><td>Early referral</td></tr>
+  <tr><td>Diarrhoea</td><td><code>diarrhoea</code></td><td><span class="no">No</span></td><td><span class="no">No</span></td><td>Early referral</td></tr>
+  <tr><td>Heartburn or stomach discomfort</td><td><code>heartburn</code></td><td><span class="no">No</span></td><td><span class="no">No</span></td><td>Early referral</td></tr>
+  <tr><td>Skin or minor wound</td><td><code>skin_minor_wound</code></td><td><span class="no">No</span></td><td><span class="no">No</span></td><td>Early referral</td></tr>
+  <tr><td>Other symptom</td><td><code>other</code></td><td><span class="no">No</span></td><td><span class="no">No</span></td><td>Early referral by design (scope gate)</td></tr>
+</table>
+<p class="meta">
+Language coverage: every pathway row above is <code>en</code>. There are <strong>no German product or pathway rows</strong>,
+so the German UI currently leads to a refusal for every symptom.
+</p>
+
+<h3>Red flags that stop the interview on the pain/fever pathway</h3>
+<ul>
+  <li>Stiff neck with sensitivity to light, or a rash that does not fade when you press a glass on it</li>
+  <li>Confusion, fainting, or difficulty staying awake</li>
+  <li>Trouble breathing, chest pain or pressure</li>
+  <li>A sudden severe headache unlike any you have had before</li>
+  <li>Fever above 39.5 C, or fever that does not come down after medicine</li>
+  <li>Immunosuppression (chemotherapy, transplant, long-term steroids) or pregnancy</li>
+</ul>
+
+<h2>6. Which medicines it can currently provide</h2>
+<div class="alert">
+<strong>None.</strong> For a Moroccan customer (<code>countryCode: 'MA'</code>) there is no enabled, approved product in
+the database, so every completed interview ends in "No suitable approved product". That is the correct and safe
+behaviour for an empty catalogue, not a bug in the matcher.
+</div>
+<table>
+  <tr><th>Product</th><th>Ingredient</th><th>Safety data row</th><th>Pathway mapping</th><th>Clinical / legal status</th><th>Enabled</th><th>Can recommend?</th></tr>
+  <tr><td>DOLIPRANE 500 mg effervescent<br><code>MA-RESEARCH-DOLIPRANE-500-EFF</code></td><td>paracetamol 500 mg</td><td>Exists, marked <code>approved</code> - <span class="no">but the approval is fabricated</span> (see section 8)</td><td>Approved, <code>pain_fever</code></td><td><code>draft</code> / <code>draft</code></td><td><span class="no">No</span></td><td><span class="no">No</span></td></tr>
+  <tr><td>BRUFEN 400 mg coated tablet<br><code>MA-RESEARCH-BRUFEN-400</code></td><td>ibuprofen 400 mg</td><td><span class="no">None</span></td><td><span class="no">None</span></td><td><code>draft</code> / <code>draft</code></td><td><span class="no">No</span></td><td><span class="no">No</span></td></tr>
+  <tr><td>IMODIUM 2 mg capsule<br><code>MA-RESEARCH-IMODIUM-2</code></td><td>loperamide 2 mg</td><td><span class="no">None</span></td><td><span class="no">None</span></td><td><code>draft</code> / <code>draft</code></td><td><span class="no">No</span></td><td><span class="no">No</span></td></tr>
+  <tr><td>ZYRTEC 10 mg film-coated<br><code>MA-RESEARCH-ZYRTEC-10</code></td><td>cetirizine 10 mg</td><td><span class="no">None</span></td><td><span class="no">None</span></td><td><code>draft</code> / <code>draft</code></td><td><span class="no">No</span></td><td><span class="no">No</span></td></tr>
+  <tr><td>TEST FIXTURE PRODUCT<br><code>ZZ-FIXTURE-TEST-500</code></td><td>"test ingredient" - synthetic, not a medicine</td><td>Approved, explicitly labelled synthetic</td><td>Approved, <code>ZZ/pain_fever</code></td><td><code>approved</code> / <code>approved</code></td><td><span class="warn">Yes</span></td><td>Only when the kiosk is set to country <code>ZZ</code>, which is a test-only setting</td></tr>
+</table>
+<p class="meta">
+Verified by <code>npm run audit:catalog</code>: "Products: 5 total, 1 chatbot-enabled, 4 disabled.
+LANGUAGE COVERAGE (kiosk languages: en, de): ZZ/pain_fever: en." The single enabled product is the test fixture and it
+belongs to country <code>ZZ</code>, not Morocco.
+</p>
+
+<div class="note">
+<strong>About the fixture screen.</strong> A screenshot showing "APPROVED PRODUCT FOUND - TEST FIXTURE PRODUCT" was taken
+while the kiosk was deliberately pointed at country <code>ZZ</code> to prove the product path works end to end. It has
+been set back to <code>MA</code>. A real customer session can never reach the fixture, because the matcher filters rows
+by country code. <code>countryCode: 'ZZ'</code> must never be left on a machine in a shop.
+</div>
+
+<h2 class="pagebreak">7. The optional AI helper, in one page</h2>
+<p>
+Its only job is to understand an answer that the built-in wording cannot map - French, Darija or Arabic speech - and
+turn it into one of the values already on the screen. It is a language aid, not a decision maker.
+</p>
+<table>
+  <tr><th>Guarantee</th><th>Implementation</th></tr>
+  <tr><td>Never decides anything</td><td>Runs outside the n8n safety chain. The engine still receives an ordinary screen answer</td></tr>
+  <tr><td>Cannot invent an option</td><td>The returned value must match an option already on screen; validated on the kiosk host and again in the browser</td></tr>
+  <tr><td>Never confident on garbage</td><td>Below <code>PILLPAL_AI_MIN_CONFIDENCE</code> (default 0.6) it returns <code>matched: false</code> and the kiosk re-asks in standard wording</td></tr>
+  <tr><td>Never silent</td><td>Every interpreted answer is read back for confirmation before submitting</td></tr>
+  <tr><td>Sees no session state</td><td>The request is rebuilt field by field; state, product decisions and the kiosk secret are asserted absent from the prompt by test</td></tr>
+  <tr><td>Failure is free</td><td>Provider errors fall back to taps and standard wording; the helper is disabled for 60 s after a timeout</td></tr>
+</table>
+<p class="meta">
+Two interchangeable placements, one contract: the kiosk-local bridge at <code>/api/understand</code> (Ollama or Gemini), or
+the n8n sidecar workflow <code>Tq1UTgrin8HYd9s6</code> where the key lives only as an n8n credential. Timing budget:
+kiosk waits 15 s &gt; sidecar waits 12 s &gt; typical answer 0.9-1.5 s. Model: <code>gemini-3.5-flash-lite</code>
+(<code>gemini-2.5-flash-lite</code> is closed to new API keys).
+</p>
+
+<h2>8. Problems found while verifying this document</h2>
+
+<div class="alert">
+<strong>8.1 A fabricated clinical approval is sitting in the live database.</strong>
+The DOLIPRANE <code>product_safety</code> row claims <code>review_status = approved</code>, reviewer
+<code>Dr. Test Reviewer</code>, role <code>Clinical Lead</code>, and source
+<code>https://ammps.sante.gov.ma/doliprane-500</code>.
+<ul style="margin-top:2mm">
+  <li>That reviewer string appears nowhere in the repository, so the row was written straight into the database outside any reviewed change.</li>
+  <li>The cited host does not respond at all (connection timeout), and AMMPS publishes no per-product leaflet pages.</li>
+  <li>The dose text - "1 tablet every 6 to 8 hours, do not exceed 3 tablets in 24 hours" - matches neither the current ANSM summary of product characteristics (500-1000 mg per dose, at least 4 hours apart, maximum 3 g/day, 4 g only on medical advice) nor the patient notice (1-2 tablets per dose, repeat after 4 hours minimum).</li>
+  <li>It omits 205 mg of sodium per effervescent tablet (relevant to hypertension and salt-restricted customers), metabisulfites (relevant to asthmatic and sulfite-sensitive customers) and the flucloxacillin acidosis interaction.</li>
+</ul>
+<strong>Consequence:</strong> if that row is ever used, the kiosk states an incorrect dose for a real medicine, attributed to a clinician who does not exist. This is the single most dangerous item in the project today.
+</div>
+
+<div class="alert">
+<strong>8.2 The enable gate can be walked through.</strong>
+<code>enforce_product_safety_before_enable</code> checks only that a <code>product_safety</code> row says
+<code>approved</code> with indications, dose text and a source URL, plus an approved pathway mapping. It does
+<strong>not</strong> check <code>products.clinical_status</code> or <code>legal_status</code> (both still <code>draft</code>),
+does not check that the reviewer is a real named person, and cannot check that the source URL resolves. One
+<code>UPDATE products SET chatbot_enabled = true</code> would therefore put DOLIPRANE in front of customers with the
+fabricated data above.
+</div>
+
+<div class="note">
+<strong>8.3 The menu is wider than the capability.</strong> Six of seven symptom categories are outside the declared
+clinical scope and their pathway rows are disabled in Supabase. Customers tapping "Cold or cough" get a referral, which
+is honest but is not what the menu promises.
+</div>
+
+<div class="note">
+<strong>8.4 German is a half-door.</strong> The UI and voice strings exist, but there are no German product or pathway
+rows and the German Piper voice model has not been downloaded, so a German customer is always refused and falls back to
+the browser voice.
+</div>
+
+<div class="note">
+<strong>8.5 Secrets and retention still need decisions.</strong> The shared webhook secret was historically visible in a
+plain config file and in documentation (now removed from the docs, but it must be rotated). n8n stores full execution
+data by default, so each spoken answer is readable in the n8n UI until pruned. Sending health information to a
+third-party model is a personal-data transfer that needs review against loi 09-08 (CNDP) and, for EU customers, GDPR.
+</div>
+
+<h2 class="pagebreak">9. What it takes to recommend real medicines</h2>
+<p>
+Nothing in the code is blocking this. The blocker is evidence. To go from "zero medicines" to a real recommendation for
+one product, four things must be true for that product, and three of them can only come from a human.
+</p>
+<table>
+  <tr><th>#</th><th>Requirement</th><th>Who can supply it</th></tr>
+  <tr><td>1</td><td>Complete, correct safety data taken from the <em>actual Moroccan pack leaflet</em>: indications, adult and paediatric dose, maximum daily dose, maximum self-treatment duration, minimum age, contraindications, allergy terms, interaction rules, pregnancy and breastfeeding rules, and excipient warnings such as sodium and sulfites</td><td>I can build this from a photo or PDF of the leaflet you provide, or from a resolvable official source, with the citation recorded in the row</td></tr>
+  <tr><td>2</td><td>A named reviewer with a real role signs the row: <code>reviewer_name</code>, <code>reviewer_role</code>, <code>reviewed_at</code></td><td><span class="no">Only you</span> - a pharmacist or clinician, not me and not a test placeholder</td></tr>
+  <tr><td>3</td><td>Legal route for unattended vending of that product in Morocco: <code>legal_status</code>, sale classification, and the AMM/pack confirmation</td><td><span class="no">Only you</span>, with local regulatory advice</td></tr>
+  <tr><td>4</td><td>The gate must refuse anything that fails 1-3, including a row that merely claims approval</td><td>I can write this - migration SQL for you to paste into the Supabase SQL Editor</td></tr>
+</table>
+
+<h3>The three routes I offered, restated</h3>
+<table>
+  <tr><th>Route</th><th>What I do</th><th>What you get</th><th>Recommendation</th></tr>
+  <tr><td><strong>A</strong> - harden the gate, then one honest product</td><td>Migration SQL that downgrades the fabricated DOLIPRANE approval and makes the trigger require real clinical and legal status, a non-placeholder reviewer, a checked date and an official source host. Then build one product's safety row from the leaflet you supply</td><td>First real recommendation, defensible in an audit, in about a day of your time</td><td><span class="yes">Recommended</span></td></tr>
+  <tr><td><strong>B</strong> - prepare all four from official labels</td><td>Complete cited safety data for DOLIPRANE, BRUFEN, IMODIUM and ZYRTEC from published regulator documents, each flagged <code>pending_local_verification</code>, all still disabled</td><td>Good preparation, still zero recommendations until a human signs</td><td>Useful second step after A</td></tr>
+  <tr><td><strong>C</strong> - enable DOLIPRANE as it stands</td><td>One SQL statement</td><td>A screen like the fixture screenshot, but with a real medicine and a fabricated dose</td><td><span class="no">Declined</span> - this is the failure mode the whole gate exists to prevent</td></tr>
+</table>
+
+<h2>10. Verification status as of this document</h2>
+<div class="ok">
+<table>
+  <tr><th>Suite</th><th>Result</th></tr>
+  <tr><td><code>npm test</code> - engine, AI guardrails, sidecar workflow, i18n, voice mapper, drift</td><td><span class="yes">All passed</span> (6 suites)</td></tr>
+  <tr><td><code>npm run test:journeys</code> - offline customer journeys</td><td><span class="yes">50 / 50</span></td></tr>
+  <tr><td><code>npm run check -- --live</code> - deployed n8n Code nodes vs repository</td><td><span class="yes">7 / 7 MATCH</span>, both workflows <code>active=true</code></td></tr>
+  <tr><td><code>npm run smoke:live</code></td><td><span class="yes">Passed</span>, dispensing stays unauthorised</td></tr>
+  <tr><td>Live customer journeys</td><td><span class="yes">35 / 35</span> (1 skipped)</td></tr>
+  <tr><td>Spoken-answer checks through the local bridge</td><td><span class="yes">14 / 14</span>, median 1.1 s</td></tr>
+  <tr><td>Hosted Gemini sidecar checks</td><td><span class="yes">10 / 10</span>, including 403 without the header on both webhooks</td></tr>
+  <tr><td>Product path against production</td><td><span class="yes">Eligible path OK</span> (fixture) and <span class="yes">safety-blocked path OK</span> (allergy conflict)</td></tr>
+  <tr><td>Browser walk as a customer</td><td><span class="yes">Passed</span> - "thirty four years" read back as "I understood: 34"; hosted sidecar called with HTTP 200 and no console errors</td></tr>
+</table>
+</div>
+
+<h2>11. Open decisions waiting on you</h2>
+<table>
+  <tr><th>ID</th><th>Decision</th><th>My recommendation</th></tr>
+  <tr><td>C</td><td><code>kiosk_outcome_log</code> retention: 30 / 90 / 365 days</td><td>90 days</td></tr>
+  <tr><td>F</td><td><code>ui_messages</code> table: wire it to the kiosk or drop it</td><td>Drop - the kiosk's own i18n already covers it</td></tr>
+  <tr><td>G</td><td>Real authentication before deployment: per-device tokens or IP allowlist</td><td>Per-device tokens - revocable, and survives a router change</td></tr>
+  <tr><td>-</td><td>Route A, B or C for the medicine catalogue</td><td>A</td></tr>
+  <tr><td>-</td><td>n8n execution-data retention window and the loi 09-08 / GDPR note before any shop deployment</td><td>7 days and a written sign-off</td></tr>
+</table>
+
+<h2>12. Manual steps only you can do</h2>
+<table>
+  <tr><th>#</th><th>Step</th><th>Where</th></tr>
+  <tr><td>M1</td><td>Delete tonight's automated test rows (<code>fixture_check_%</code>, <code>understand_%</code>, <code>journey_live_%</code>) - <code>service_role</code> has only <code>select</code> and <code>insert</code>, so I cannot</td><td>Supabase SQL Editor</td></tr>
+  <tr><td>M2</td><td>Rotate the shared webhook secret: one credential serves all three webhooks, so change it in n8n, <code>web/config.js</code> and <code>.env</code> in the same sitting, then re-run the live smoke test</td><td>n8n Credentials + local files</td></tr>
+  <tr><td>M3</td><td>Set execution-data pruning to 7 days and delete binary data</td><td>n8n Settings</td></tr>
+  <tr><td>M4</td><td>Run the migration SQL I provide for the gate hardening and any catalogue change</td><td>Supabase SQL Editor</td></tr>
+  <tr><td>M5</td><td>Supply the actual pack leaflet (photo or PDF) or the Moroccan AMM number for the product you want enabled first</td><td>Your pharmacy / supplier</td></tr>
+  <tr><td>M6</td><td>Name the reviewer and record the clinical and legal sign-off</td><td>Your responsibility</td></tr>
+  <tr><td>M7</td><td>Download <code>de_DE-thorsten-medium.onnx</code> if German is needed at all</td><td>Piper voices repository</td></tr>
+</table>
+
+<div class="foot">
+Sources used for section 8.1: ANSM summary of product characteristics for paracetamol 500 mg effervescent tablets
+(updated 1 July 2023) and the DOLIPRANE 500 mg patient notice; the French public medicines database for the same
+speciality; and the Moroccan Ministry of Health DMP page for the regulatory route. Product and safety values quoted in
+this document were read from the live Supabase project on 4 November 2026.
+<br><br>
+This document describes what the system does today. It is not medical advice, and no product listed in section 6 is
+cleared for recommendation by this kiosk.
+</div>
+
+</body>
+</html>

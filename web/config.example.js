@@ -1,42 +1,53 @@
-// Copy this file to web/config.js and fill in the two values below.
-// web/config.js is deliberately git-ignored: it holds the kiosk key, which is
-// served to the browser and must stay out of version control.
+// Copy to web/config.js. Country enforcement lives on the server (PILLPAL_COUNTRY_CODE).
+// Browser configuration is public. Do not put backend credentials here.
 window.PILLPAL_CONFIG = {
-  // Use /webhook-test/pillpal-chat-turn only while listening in n8n test mode.
-  // Use /webhook/pillpal-chat-turn after the workflow is activated.
-  webhookUrl: 'https://YOUR_N8N_HOST/webhook/pillpal-chat-turn',
-  // Must match the Value of the Header Auth credential selected in the
-  // Chat Turn Webhook node. Leave empty until that credential is set up.
-  webhookSecret: '',
-  countryCode: 'MA',
-  languageCode: 'en',
+  // The browser always uses the local assessment service.
+  webhookUrl: '/api/chat-turn',
+  countryCode: 'DE',
+  // "auto" detects the customer's spoken language. Explicit languages remain
+  // available as a fallback. The deterministic workflow values stay unchanged.
+  languageCode: 'de',
+  catalogLanguageCode: 'de',
   inactivityMs: 120000,
 
-  // Optional: understand an answer the built-in wording cannot map (French,
-  // Darija, Arabic). Leave both out to use the kiosk's own bridge, which reads
-  // its provider settings from .env. Point them at the n8n sidecar workflow to
-  // keep the provider call inside n8n instead of on this machine; the sidecar
-  // uses the same X-PILLPAL-Auth header as webhookSecret above. Neither route
-  // decides anything - the safety workflow still sees ordinary screen answers.
-  // understandUrl: 'https://YOUR_N8N_HOST/webhook/pillpal-understand',
-  // understandStatusUrl: 'https://YOUR_N8N_HOST/webhook/pillpal-understand-status',
+  // Voice-first layout: the microphone reopens after each spoken prompt, the
+  // read-back can be answered with "yes" or "no", and the touch options shrink to
+  // a fallback. Speech only maps onto the same fixed option values a tap sends;
+  // it never reaches the decision engine any differently.
+  voiceFirst: true,
+
+  // Understanding uses the same-origin /api/understand bridge. Configure optional
+  // providers only in .env. Do not put n8n or provider credentials in this file.
 
   voice: {
     provider: 'piper',
     ttsUrl: '/api/tts',
     fallbackToBrowser: true,
-    language: 'en-US',
-    rate: 1.08,
-    pitch: 1.02,
+    // Set true after GEMINI_LIVE_TRANSCRIBE=1 and GEMINI_API_KEY are configured
+    // in .env. The kiosk server issues a one-use short-lived token; the API key
+    // is never sent to the browser.
+    geminiLive: false,
+    // Fully local speech recognition through whisper.cpp.
+    localWhisper: true,
+    bargeIn: true,
+    localWhisperUrl: '/api/transcribe',
+    localWhisperTranslate: false,
+    voiceActivityThreshold: 0.004,
+    geminiTokenUrl: '/api/gemini-live-token',
+    // End a turn after a natural short pause. Increase to 1400-1600 for users
+    // who speak slowly; values below 800 can cut sentences off.
+    silenceTimeoutMs: 1800,
+    language: 'de-DE',
+    rate: 0.96,
+    pitch: 1.03,
+    femaleOnly: true,
     preferredNames: [
       'Microsoft Aria',
       'Microsoft Jenny',
       'Microsoft Zira',
       'Samantha',
-      'Google US English',
       'Microsoft Katja',
       'Microsoft Hedda',
-      'Google Deutsch',
     ],
   },
 };

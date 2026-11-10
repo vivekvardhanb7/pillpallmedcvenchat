@@ -1,9 +1,10 @@
+import { loadEngineSource } from '../n8n/load-engine-source.mjs';
 import { readFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 
 const intakeSource = await readFile(resolve('n8n/src/intake-and-safety-engine.js'), 'utf8');
-const catalogSource = await readFile(resolve('n8n/src/catalog-decision.js'), 'utf8');
+const catalogSource = await loadEngineSource(resolve('n8n/src/catalog-decision.js'));
 const runIntakeCode = new Function('$input', intakeSource);
 const runCatalogCode = new Function('$input', '$', catalogSource);
 
@@ -15,10 +16,10 @@ function intake(body) {
   return runIntakeCode(inputFor(body))[0].json;
 }
 
-function answer(previous, value) {
+function answer(previous, value, countryCode = 'MA') {
   return intake({
     session_id: previous.session_id,
-    country_code: 'MA',
+    country_code: countryCode,
     language_code: 'en',
     state: previous.state,
     answer: { question_id: previous.screen.question_id, value },
@@ -32,10 +33,7 @@ turn = answer(turn, 30);
 turn = answer(turn, 'today');
 turn = answer(turn, 'mild');
 turn = answer(turn, 'no');
-turn = answer(turn, 'not_applicable');
-turn = answer(turn, 'no');
-turn = answer(turn, 'no');
-turn = answer(turn, 'no');
+turn = answer(turn, 'none');
 assert.equal(turn.screen.question_id, 'confirm');
 const catalogRequest = answer(turn, 'yes');
 assert.equal(catalogRequest.needs_catalog, true);
@@ -46,8 +44,8 @@ const earlyExitCases = [
   { answers: ['other'], outcome: 'NO_SUITABLE_PRODUCT', reason: 'unsupported_pathway' },
   { answers: ['pain_fever', 30, 'more_than_7_days'], outcome: 'CLINIC_REFERRAL', reason: 'duration_outside_pathway' },
   { answers: ['pain_fever', 30, 'today', 'severe'], outcome: 'CLINIC_REFERRAL', reason: 'severe_symptom' },
-  { answers: ['pain_fever', 30, 'today', 'mild', 'no', 'pregnant'], outcome: 'CLINIC_REFERRAL', reason: 'pregnancy_breastfeeding_or_uncertain' },
-  { answers: ['pain_fever', 30, 'today', 'mild', 'no', 'not_applicable', 'not_sure'], outcome: 'CLINIC_REFERRAL', reason: 'medical_history_uncertain' },
+  { answers: ['pain_fever', 30, 'today', 'mild', 'no', 'pregnancy'], outcome: 'CLINIC_REFERRAL', reason: 'pregnancy_breastfeeding_or_uncertain' },
+  { answers: ['pain_fever', 30, 'today', 'mild', 'no', 'not_sure'], outcome: 'CLINIC_REFERRAL', reason: 'medical_history_uncertain' },
 ];
 for (const testCase of earlyExitCases) {
   let step = intake({ reset: true, session_id: `early_${Math.random().toString(36).slice(2, 8)}` });
@@ -69,6 +67,20 @@ assert.equal(shortSummary.allergies, 'Not asked');
 assert.equal(shortSummary.age, 12);
 
 const approvedProduct = {
+  chatbot_enabled: true,
+  market_status: 'commercialised',
+  clinical_status: 'approved',
+  legal_status: 'approved',
+  review_status: 'approved',
+  pathway_approval_status: 'approved',
+  is_fixture: false,
+  data_origin: 'reviewed',
+  reviewer_name: 'Unit test reviewer (not clinical evidence)',
+  reviewed_at: '2026-11-09T00:00:00Z',
+  clinical_source_url: 'https://unit-tests.example/test-source',
+  label_url: 'https://unit-tests.example/test-label',
+  allowed_indications: ['pain_fever'],
+  maximum_duration_days: 7,
   id: '00000000-0000-0000-0000-000000000001',
   country_code: 'MA',
   language_code: 'en',
@@ -84,7 +96,7 @@ const approvedProduct = {
   allergy_terms: ['test ingredient'],
   contraindications: ['example condition'],
   interaction_rules: ['example interacting medicine'],
-  dose_instructions: { display_text: 'Use only the clinically approved local label instructions.' },
+  dose_instructions: { status: 'approved', display_text: 'Use only the clinically approved local label instructions.' },
   warnings: ['Research test product only'],
   product_version: 1,
   safety_version: 1,
@@ -159,8 +171,7 @@ assert.ok(!agePlusAllergyBlock.reason_codes.includes('age_outside_supported_rang
 assert.equal(agePlusAllergyBlock.reason_codes[0], 'all_products_blocked');
 
 const foreignLanguageCatalog = runCatalog(catalogState(), [{ ...approvedProduct, language_code: 'de' }]);
-assert.equal(foreignLanguageCatalog.outcome, 'NO_SUITABLE_PRODUCT');
-assert.ok(foreignLanguageCatalog.reason_codes.includes('no_approved_product_for_pathway'));
+assert.equal(foreignLanguageCatalog.outcome, 'PRODUCT_ELIGIBLE', 'UI language must not change medicine eligibility');
 
 const matchingLanguageCatalog = runCatalog(catalogState(), [{ ...approvedProduct, language_code: 'en' }]);
 assert.equal(matchingLanguageCatalog.outcome, 'PRODUCT_ELIGIBLE');
@@ -243,6 +254,32 @@ assert.equal(scope.needs_catalog, false);
 assert.equal(scope.state.pathway_code, 'cold_cough', 'the refused pathway is still recorded for the outcome log');
 assert.equal(scope.summary.allergies, 'Not asked');
 
+// Widening the menu is only safe where the catalogue is synthetic. Country ZZ is
+// the reserved fixture, so every declared category is assessable there; a real
+// country keeps exactly the signed-off scope, even if a client forges its state.
+for (const pathway of ['cold_cough', 'allergy', 'diarrhoea', 'heartburn', 'skin_minor_wound']) {
+  let demo = intake({ reset: true, session_id: `demo_${pathway}`, country_code: 'ZZ' });
+  demo = answer(demo, pathway, 'ZZ');
+  assert.equal(demo.screen.question_id, 'age', `${pathway} must stay assessable in the demo country`);
+}
+
+let realWalk = intake({ reset: true, session_id: 'test_session_forged_scope' });
+realWalk = answer(realWalk, 'pain_fever');
+realWalk = answer(realWalk, 30);
+realWalk = answer(realWalk, 'today');
+realWalk = answer(realWalk, 'mild');
+realWalk = answer(realWalk, 'no');
+realWalk = answer(realWalk, 'none');
+const forged = intake({
+  session_id: realWalk.session_id,
+  country_code: 'MA',
+  language_code: 'en',
+  state: { ...realWalk.state, pathway_code: 'cold_cough' },
+  answer: { question_id: 'confirm', value: 'yes' },
+});
+assert.equal(forged.needs_catalog, false, 'a forged state must not widen a real country scope');
+assert.ok(forged.reason_codes.includes('pathway_not_serviced'), JSON.stringify(forged.reason_codes));
+
 let flags = intake({ reset: true, session_id: 'test_session_flags' });
 flags = answer(flags, 'pain_fever');
 flags = answer(flags, 45);
@@ -301,7 +338,7 @@ assertFitsSchema(hostile, 'hostile row');
 assert.equal(hostile.outcome, 'NO_SUITABLE_PRODUCT', 'an unknown outcome must not be logged as if it were a decision');
 assert.equal(hostile.age_band, 'unknown');
 assert.equal(hostile.language_code, 'en');
-assert.equal(hostile.country_code, 'MA');
+assert.equal(hostile.country_code, 'DE');
 assert.equal(hostile.pathway_code, 'none');
 assert.equal(hostile.turns, 0);
 assert.equal(hostile.elapsed_ms, 0);

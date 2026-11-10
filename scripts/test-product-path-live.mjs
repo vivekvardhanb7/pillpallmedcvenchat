@@ -62,17 +62,17 @@ function assert(condition, message) {
 }
 
 const eligible = await runSession('eligible', [
-  'pain_fever', 30, 'today', 'mild', 'no', 'not_applicable',
-  'no', 'no', 'no', 'yes',
+  'pain_fever', 30, 'today', 'mild', 'no', 'none', 'yes',
 ]);
 assert(eligible.outcome === 'PRODUCT_ELIGIBLE', `Expected PRODUCT_ELIGIBLE, received ${eligible.outcome} (${JSON.stringify(eligible.reason_codes)})`);
-assert(eligible.product?.name === 'TEST FIXTURE PRODUCT', `Unexpected product: ${eligible.product?.name}`);
+assert(eligible.product?.name && /pain & fever|doliprane|brufen/i.test(eligible.product.name), `Unexpected product: ${eligible.product?.name}`);
+assert(!/test fixture/i.test(eligible.product.name), 'Automated fixture must never be returned');
 assert(eligible.dispense_authorized === false, 'dispense_authorized must remain false');
 console.log(`Eligible path OK: ${eligible.product.name} (${eligible.outcome})`);
 
 const blocked = await runSession('allergy_block', [
-  'pain_fever', 30, 'today', 'mild', 'no', 'not_applicable',
-  'yes', ['test ingredient'], 'no', 'no', 'yes',
+  'pain_fever', 30, 'today', 'mild', 'no', 'history',
+  'yes', ['paracetamol', 'ibuprofen'], 'no', 'no', 'yes',
 ]);
 assert(blocked.outcome === 'NO_SUITABLE_PRODUCT', `Expected NO_SUITABLE_PRODUCT, received ${blocked.outcome}`);
 assert(blocked.reason_codes?.includes('all_products_blocked'), `Missing all_products_blocked: ${JSON.stringify(blocked.reason_codes)}`);

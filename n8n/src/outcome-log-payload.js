@@ -49,7 +49,7 @@ const OUTCOMES = new Set([
 
 const DURATIONS = new Set(['today', '1_to_2_days', '3_to_7_days', 'more_than_7_days']);
 const SEVERITIES = new Set(['mild', 'moderate', 'severe']);
-const LANGUAGES = new Set(['en', 'de']);
+const LANGUAGES = new Set(['en', 'de', 'hi']);
 const PATHWAYS = new Set([
   'pain_fever', 'cold_cough', 'allergy', 'diarrhoea', 'heartburn', 'skin_minor_wound', 'other', 'none',
 ]);
@@ -62,7 +62,7 @@ return [{
     // never a person. Anything unusable becomes a fixed marker rather than
     // being passed through, so a stray character can never break the insert.
     session_key: /^[A-Za-z0-9_-]{6,120}$/.test(sessionKey) ? sessionKey : 'session_invalid',
-    country_code: /^[A-Z]{2}$/.test(text(state.country_code, 2)) ? text(state.country_code, 2) : 'MA',
+    country_code: /^[A-Z]{2}$/.test(text(state.country_code, 2)) ? text(state.country_code, 2) : 'DE',
     language_code: oneOf(state.language_code, LANGUAGES, 'en'),
     pathway_code: oneOf(state.pathway_code, PATHWAYS, 'none'),
     age_band: ageBand(state.age_years),

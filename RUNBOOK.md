@@ -106,9 +106,12 @@ Migrations must be applied in numeric order (SQL editor or CLI):
 | --- | --- |
 | `000`-`003` | catalogue schema, research seed, inactive question templates |
 | `004` | `recommendable_product_pathways` view - the only thing the workflow reads |
-| `005` | isolated `ZZ` test fixture (the only product the matcher can currently return) |
+| `005` | isolated `ZZ` test fixture (disabled by `010` and blocked from re-enabling) |
 | `006` | resets every `MA` product back to disabled/draft - required after any test editing |
 | `007` | `kiosk_outcome_log` - anonymised outcome counters plus a prune function |
+| `008` | synthetic `ZZ` demo catalogue across the widened pathways |
+| `009` | 16 real Morocco products in `in_review`, disabled until signed off |
+| `010` | data-integrity guard: provenance, fixture block, reviewer and max-duration checks |
 
 After `007`, the workflow writes one row per finished assessment through
 `Build Outcome Log Row` (sanitises every field against the CHECK constraints) and

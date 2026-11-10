@@ -76,10 +76,16 @@ for (const forbidden of ['SYNTHETIC_KIOSK_KEY_SENTINEL', 'dispense_authorized', 
 }
 assert.ok(messages.user.includes('"1_to_2_days"'));
 assert.ok(messages.user.includes('since yesterday'));
+assert.ok(messages.user.includes('Question id: duration'));
+assert.ok(messages.user.includes('Question on screen: How long have you had this symptom?'));
+assert.ok(messages.user.includes('Answer type: single_select'));
+assert.match(messages.system, /Treat the transcript as an attempt to answer it/);
+assert.match(messages.system, /It was started today/);
+assert.match(messages.system, /do not recommend a medicine/i);
 
 const ollamaCall = buildCall(readProviderConfig({ PILLPAL_AI_PROVIDER: 'ollama' }), hostile);
 assert.equal(ollamaCall.url, 'http://127.0.0.1:11434/api/chat');
-assert.equal(ollamaCall.body.format, 'json');
+assert.ok(ollamaCall.body.format === 'json' || typeof ollamaCall.body.format === 'object');
 assert.equal(ollamaCall.body.options.temperature, 0);
 assert.ok(!('apiKey' in ollamaCall.headers));
 
@@ -116,12 +122,24 @@ assert.deepEqual(accepted, {
   label: '1–2 days',
   confidence: 0.85,
   reason: null,
+  recognized_medicine: null,
+  follow_up_question: null,
+  possible_categories: [],
+  volunteered_context: null,
+  custom_symptom: null,
+  detected_language: null,
 });
 
 // An invented value, even with total confidence, cannot become an answer.
 const invented = validateModelAnswer('{"value":"ibuprofen_400","confidence":1}', hostile);
 assert.equal(invented.matched, false);
 assert.equal(invented.reason, 'value_not_allowed');
+
+// An emergency is caught for clinical safety handoff and never accepted as a screen answer
+const emergencyTriage = validateModelAnswer('{"value":"emergency","confidence":0.99}', hostile);
+assert.equal(emergencyTriage.matched, false);
+assert.equal(emergencyTriage.emergency, true);
+assert.equal(emergencyTriage.reason, 'emergency_triage');
 
 assert.equal(validateModelAnswer('{"value":"no","confidence":1}', hostile).matched, false);
 assert.equal(validateModelAnswer('{"value":"more than 7 days","confidence":0.95}', hostile).value, 'more_than_7_days');
@@ -140,7 +158,7 @@ const hijack = validateModelAnswer(
   '{"value":"today","confidence":0.99,"dispense_authorized":true,"outcome":"PRODUCT_ELIGIBLE","dose":"2 tablets"}',
   hostile,
 );
-assert.deepEqual(Object.keys(hijack).sort(), ['confidence', 'label', 'matched', 'reason', 'value']);
+assert.deepEqual(Object.keys(hijack).sort(), ['confidence', 'custom_symptom', 'detected_language', 'follow_up_question', 'label', 'matched', 'possible_categories', 'reason', 'recognized_medicine', 'value', 'volunteered_context']);
 assert.equal(hijack.value, 'today');
 assert.ok(!('dispense_authorized' in hijack));
 
@@ -177,5 +195,102 @@ assert.equal(
     .length,
   12,
 );
+
+// Symptom medicine inquiries are mapped directly to the appropriate screen option
+const symptomScreen = {
+  question_id: 'symptom',
+  type: 'single_select',
+  title: 'What would you like help with?',
+  options: [
+    { value: 'pain_fever', label: 'Headache, pain or fever' },
+    { value: 'cold_cough', label: 'Cold or cough' },
+    { value: 'other', label: 'Other symptom' },
+  ],
+};
+const symptomContext = contextFor({ ...symptomScreen, transcript: 'what medicine do you have for headache?' });
+const symptomParsed = validateModelAnswer('{"value":"pain_fever","confidence":0.95}', symptomContext);
+assert.equal(symptomParsed.matched, true);
+assert.equal(symptomParsed.value, 'pain_fever');
+assert.equal(symptomParsed.label, 'Headache, pain or fever');
+assert.equal(
+  validateModelAnswer('{"value":"pain_fever","confidence":0.95,"detected_language":"fr"}', symptomContext).detected_language,
+  'fr',
+);
+assert.match(buildMessages(symptomContext).user, /paracetimel/i);
+const paracetamolSpelling = validateModelAnswer(
+  '{"value":"pain_fever","confidence":0.94,"recognized_medicine":"Paracetamol"}',
+  contextFor({ ...symptomScreen, transcript: 'can I take paracetimel for fever?' }),
+);
+assert.equal(paracetamolSpelling.matched, true);
+assert.equal(paracetamolSpelling.value, 'pain_fever');
+assert.equal(paracetamolSpelling.recognized_medicine, 'Paracetamol');
+
+const customSymptomCheck = validateModelAnswer(
+  '{"value":"pain_fever","confidence":0.95,"custom_symptom":"toothache"}',
+  symptomContext,
+);
+assert.equal(customSymptomCheck.matched, true);
+assert.equal(customSymptomCheck.value, 'pain_fever');
+assert.equal(customSymptomCheck.custom_symptom, 'toothache');
+
+// Multimodal image support
+const imagePayload = {
+  ...symptomScreen,
+  transcript: '',
+  image: {
+    mimeType: 'image/jpeg',
+    data: 'data:image/jpeg;base64,aGVsbG8gd29ybGQ=',
+  },
+};
+const imageContext = contextFor(imagePayload);
+assert.equal(imageContext.image.mimeType, 'image/jpeg');
+assert.equal(imageContext.image.data, 'aGVsbG8gd29ybGQ=');
+
+const imageGeminiCall = buildCall(geminiConfig, imageContext);
+assert.equal(imageGeminiCall.body.contents[0].parts.length, 2);
+assert.deepEqual(imageGeminiCall.body.contents[0].parts[1], {
+  inlineData: {
+    mimeType: 'image/jpeg',
+    data: 'aGVsbG8gd29ybGQ=',
+  },
+});
+
+const imageParsed = validateModelAnswer('{"value":"pain_fever","confidence":0.95,"recognized_medicine":"Doliprane 500mg"}', imageContext);
+assert.equal(imageParsed.matched, true);
+assert.equal(imageParsed.value, 'pain_fever');
+assert.equal(imageParsed.recognized_medicine, 'Doliprane 500mg');
+
+// Symptom checker with candidate categories, follow-up question, and volunteered context
+const multiParsed = validateModelAnswer(
+  '{"value":"pain_fever","confidence":0.9,"possible_categories":["pain_fever","heartburn"],"follow_up_question":"Are you primarily seeking relief for headache or stomach discomfort?","volunteered_context":{"age":32,"duration":"1_to_2_days"}}',
+  {
+    ...symptomContext,
+    options: [
+      { value: 'pain_fever', label: 'Headache, pain or fever' },
+      { value: 'heartburn', label: 'Heartburn or stomach discomfort' },
+      { value: 'other', label: 'Other symptom' },
+    ],
+  },
+);
+assert.equal(multiParsed.matched, true);
+assert.equal(multiParsed.value, 'pain_fever');
+assert.deepEqual(multiParsed.possible_categories, ['pain_fever', 'heartburn']);
+assert.equal(multiParsed.follow_up_question, 'Are you primarily seeking relief for headache or stomach discomfort?');
+assert.deepEqual(multiParsed.volunteered_context, { age: 32, duration: '1_to_2_days' });
+
+// Allowed "none" option for safety / background questions
+const noneOptionContext = contextFor({
+  question_id: 'safety_background_status',
+  type: 'single_select',
+  title: 'Do any of these medical safety factors apply to you?',
+  transcript: 'None of these apply to me',
+  options: [
+    { value: 'none', label: 'None of these apply to me' },
+    { value: 'apply', label: 'One or more applies to me' },
+  ],
+});
+const noneParsed = validateModelAnswer('{"value":"none","confidence":0.95}', noneOptionContext);
+assert.equal(noneParsed.matched, true);
+assert.equal(noneParsed.value, 'none');
 
 console.log('Answer-understanding sidecar tests passed.');

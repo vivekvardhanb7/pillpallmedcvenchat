@@ -10,6 +10,8 @@ export const UNDERSTAND_QUESTIONS = new Set([
   'severity',
   'warning_signs',
   'pregnancy_breastfeeding',
+  'safety_background_status',
+  'medical_history_status',
   'allergy_status',
   'allergy_terms',
   'medication_status',
@@ -106,7 +108,18 @@ export function sanitizeRequest(payload, config) {
   if (!UNDERSTAND_QUESTIONS.has(questionId)) return { ok: false, error: 'Unsupported question.' };
 
   const transcript = normalizeText(source.transcript, LIMITS.transcriptChars);
-  if (transcript.length < 2) return { ok: false, error: 'A non-empty transcript is required.' };
+  let image = null;
+  if (source.image && typeof source.image === 'object' && typeof source.image.data === 'string') {
+    const rawData = String(source.image.data).replace(/^data:image\/[a-z0-9+.-]+;base64,/, '').trim();
+    if (rawData.length > 8 && rawData.length < 5 * 1024 * 1024) {
+      image = {
+        mimeType: normalizeText(source.image.mimeType || 'image/jpeg', 40),
+        data: rawData,
+      };
+    }
+  }
+
+  if (transcript.length < 2 && !image) return { ok: false, error: 'A non-empty transcript or image is required.' };
 
   const type = normalizeText(source.type, 30);
   if (!['single_select', 'confirmation', 'number', 'text'].includes(type)) {
@@ -135,7 +148,8 @@ export function sanitizeRequest(payload, config) {
       questionId,
       type,
       options,
-      transcript,
+      transcript: transcript || (image ? 'Photo provided by customer' : ''),
+      image,
       language: normalizeText(source.language, 12) || 'en',
       title: normalizeText(source.title, LIMITS.titleChars),
       minimum: type === 'number' ? minimum : 0,
@@ -146,20 +160,68 @@ export function sanitizeRequest(payload, config) {
 }
 
 const SYSTEM_PROMPT = [
-  'You read an answer spoken out loud to a pharmacy self-service kiosk and map it to the fixed answer values of the question currently on screen.',
+  'You read what a customer said to a pharmacy self-service kiosk and map it onto the fixed answer values of the question currently on screen.',
+  'The question on screen is the only question being answered. Treat the transcript as an attempt to answer it, even when it is a full sentence, contains extra words, or has a speech-recognition misspelling.',
   'Rules:',
-  '- Reply with a single JSON object and nothing else.',
+  '- Reply with a single JSON object and nothing else. Every response MUST include "value" and "confidence" (number between 0.0 and 1.0, e.g. 0.95).',
+  '- Include "detected_language" as the ISO 639-1 two-letter code of the customer\'s language (for example "de", "fr", "ar", "tr" or "en"). For mixed language, use the language carrying most of the meaning.',
   '- "value" must be copied exactly from the allowed values for this question. Never invent a value and never invent a medicine.',
   '- The customer may answer in any language, in dialect, or mixing languages. Map the meaning, not the literal words.',
-  '- If the answer is unclear, silent, off-topic, a question back to the kiosk, or fits more than one allowed value, reply {"value":"unknown","confidence":0}.',
-  '- If the customer asks the kiosk for medical advice or for a medicine, reply {"value":"unknown","confidence":0}.',
+  '- Negation applies to the whole answer. "no", "none", "not", "never", "la", "walo", "non", "ne ... pas", "kein" and "nicht" mean the negative option even when the rest of the sentence mentions a symptom, medicine or condition.',
+  '- Do not answer a health question and do not recommend a medicine directly. You only extract the choice or symptom this customer indicated.',
+  '- If the customer asks what medicine or product to take for their symptom (for example "what medicine is good for a headache?", "which tablet is best for fever?", "can I get something for stomach pain?"), treat this as reporting that symptom and select the matching allowed symptom value.',
+  '- When answering a symptom question: if the customer describes multiple symptoms or an ambiguous health complaint (e.g. fever and stomach pain), set "value" to the primary/most prominent category on screen, include an array of all matching category values in "possible_categories", and generate a concise clarifying follow-up question in the customer\'s language in "follow_up_question" (for example: "Are you looking for relief primarily from the fever or the stomach pain?").',
+  '- When answering a symptom question: if the customer mentions a specific symptom or health complaint (such as "toothache", "back pain", "migraine", "fever", "sinus headache", "runny nose", "acid reflux"), extract the concise symptom name in English in "custom_symptom" (for example: "toothache", "fever", "back pain").',
+  '- If the customer in their description also volunteers context (e.g. age, duration, or severity), you may include them in "volunteered_context" (e.g. {"age": 25, "duration": "1_to_2_days"}).',
+  '- Never provide a medical diagnosis (do not tell them what disease or illness they have).',
+  '- Never prescribe, recommend, or approve a specific medicine directly.',
+  '- If an image is provided (such as a photo of a medicine box, blister pack, or bottle): read the brand name, active ingredients, and strength. Map it directly to the matching symptom category on screen (e.g. Paracetamol or Brufen -> headache/pain/fever; cough syrup -> cold/cough; antihistamine -> allergy; antacid -> heartburn; loperamide -> diarrhoea; plaster -> minor wound). You may include the recognized medicine name in "recognized_medicine".',
+  '- If the customer mentions acute life-threatening emergency symptoms or an image shows severe trauma or bleeding, reply {"value":"emergency","confidence":0.99}.',
+  '- If the customer is clearly asking for help or clarification about the screen without naming a symptom (for example "what does mild mean?"), reply {"value":"unknown","confidence":0}.',
+  '- If the answer is unclear, silent, off-topic, fits more than one allowed value, or does not answer this question, reply {"value":"unknown","confidence":0}.',
+  '- A vague reference such as "these conditions", "that one", or "the above" does not say yes or no. Return unknown unless the customer also clearly says yes, no, none, or not sure.',
   '- Never guess on their behalf. An honest "unknown" lets the kiosk ask the question again.',
   '- "confidence" is a number between 0 and 1 for how sure you are that "value" is what this customer meant.',
   'Examples:',
-  '- "no none of that" on a yes/no safety question -> {"value":"no","confidence":0.97}',
-  '- "wa bash n-3ref m3a kolchi, men nhar l-bareh" (fever since yesterday) on a duration question -> {"value":"1_to_2_days","confidence":0.8}',
-  '- "ich habe heute Morgen angefangen" on a duration question -> {"value":"today","confidence":0.9}',
-  '- "welche Tablette ist besser fuer mich?" -> {"value":"unknown","confidence":0}',
+  '- "It was started today" on a duration question -> {"value":"today","confidence":0.95}',
+  '- "since yesterday" on a duration question -> {"value":"1_to_2_days","confidence":0.9}',
+  '- "not too bad, just a bit annoying" on a severity question -> {"value":"mild","confidence":0.9}',
+  '- "no, none of these" on a yes/no safety question -> {"value":"no","confidence":0.97}',
+  '- "these conditions" on a yes/no safety question -> {"value":"unknown","confidence":0}',
+  '- "la, 3endich chi mard" (no, I do not have any illness) on a yes/no history question -> {"value":"no","confidence":0.9}',
+  '- "non, je ne prends aucun traitement" on a yes/no medicine question -> {"value":"no","confidence":0.95}',
+  '- "I have a head deck since morning" on a symptom question -> the option whose label means headache, pain or fever',
+  '- "what medicine do you have for a headache?" on a symptom question -> the option whose label means headache, pain or fever',
+  '- "welche Tablette ist gut gegen Kopfschmerzen?" on a symptom question -> the option whose label means headache, pain or fever',
+  '- "do you have cough syrup?" on a symptom question -> the option whose label means cold or cough',
+  '- "I have severe chest pain going into my left arm" -> {"value":"emergency","confidence":0.99}',
+  '- "what does mild mean?" -> {"value":"unknown","confidence":0}',
+  '- "welche Tablette ist besser fuer mich?" without naming a symptom -> {"value":"unknown","confidence":0}',
+].join('\n');
+
+const LOCAL_SYSTEM_PROMPT = [
+  'Map a pharmacy kiosk customer reply to the current screen. Return exactly ONE JSON object only, no extra text.',
+  'Output format:',
+  '{"value": "<allowed_value_or_unknown>", "confidence": 0.95, "detected_language": "en"}',
+  '',
+  'Rules:',
+  '- The customer may speak any language (English, French, Arabic/Darija, German, Telugu, Hindi, Spanish). Understand meaning, spelling errors and negation.',
+  '- Copy "value" exactly from the allowed values on screen. If unclear, off-topic, or not answered, return {"value":"unknown","confidence":0}.',
+  '- Negation rule: If the customer says "no", "none", "not", "nope", "nothing", "never", "I don\'t have", or denies having symptoms or warning signs (e.g. "no chest pain", "no breathing trouble", "none of those apply to me"), you MUST select the negative option (e.g. "no" or "none"). Negation overrides everything: denial of warning signs means "no", NEVER "yes" or "emergency".',
+  '- Duration rule: 1 day, 2 days, "since yesterday", or "two days ago" maps to "1_to_2_days". 3 to 7 days or "a few days" maps to "3_to_7_days". More than 7 days or "a week" maps to "more_than_7_days".',
+  '- "confidence" must be a float between 0.0 and 1.0 (default 0.95 if matched well).',
+  '- Never diagnose, prescribe, recommend a product, change a dose or authorize dispensing.',
+  '- For an actual reported acute emergency (e.g. customer states they currently have severe crushing chest pain, inability to breathe, or severe bleeding), return {"value":"emergency","confidence":0.99}.',
+  '- For a symptom screen, custom_symptom may contain the concise symptom in English. recognized_medicine may contain only a medicine name the customer actually said.',
+  '- If the symptom reply explicitly includes age, duration or severity, volunteered_context may contain only age, duration and severity using the screen codes.',
+  '- Examples:',
+  '  * "headache" or "fever" or "head hurts" -> {"value":"pain_fever","confidence":0.95}',
+  '  * "coughing and runny nose" -> {"value":"cold_cough","confidence":0.95}',
+  '  * "started 2 days ago" or "since yesterday" -> {"value":"1_to_2_days","confidence":0.95}',
+  '  * "started 4 days ago" or "for 5 days" -> {"value":"3_to_7_days","confidence":0.95}',
+  '  * "no" or "none" or "no chest pain, no breathing problems" -> {"value":"no","confidence":0.95}',
+  '  * "none, healthy and not pregnant" -> {"value":"none","confidence":0.95}',
+  '  * "yes" -> {"value":"yes","confidence":0.95}',
 ].join('\n');
 
 function describeAllowed(context) {
@@ -173,24 +235,82 @@ function describeAllowed(context) {
       'Example: "sui tablet b paracetamol w ibuprofen" -> {"value":"paracetamol, ibuprofen","confidence":0.85}.',
     ].join(' ');
   }
-  const lines = context.options.map(option => `- "${option.value}" means "${option.label || option.value}"`);
-  return ['Allowed values (copy one exactly into "value"):'].concat(lines).join('\n');
+  const lines = context.options.map(option => {
+    let label = option.label || option.value;
+    if (context.questionId === 'duration' && option.value === '1_to_2_days') {
+      label = `${label} (yesterday, 1-2 days, two days ago)`;
+    } else if (context.questionId === 'duration' && option.value === '3_to_7_days') {
+      label = `${label} (3-7 days, three to seven days, a few days)`;
+    }
+    return `- "${option.value}" means "${label}"`;
+  });
+  return [
+    'Allowed values (copy one exactly into "value"). Choose the closest meaning; the customer does not have to use the exact label:',
+  ].concat(lines).join('\n');
 }
 
 export function buildMessages(context) {
+  const imageNote = context.image ? 'Customer attached an image of a medicine package, product label, or health inquiry. Inspect it.' : null;
+  // Medicine names are relevant only while choosing a symptom. Keeping this
+  // context-specific prevents a later allergy, condition or duration turn from
+  // receiving product names that the customer did not provide in that turn.
+  const symptomMedicineHint = context.questionId === 'symptom'
+    ? [
+        'At this symptom question only, map a clear medicine name plus a named reason for use to an available symptom option. Include "recognized_medicine" using the canonical active ingredient where known.',
+        'Paracetamol, Dolo or Doliprane (including clear variants "paractmol", "paracetmol" and "paracetimel") means pain, headache or fever; use "Paracetamol".',
+        'Ibuprofen or Brufen (including "ibuprofin" and "ibuprophen") means pain, headache or fever; use "Ibuprofen". Aspirin or "asprin" for pain or fever also means pain, headache or fever; use "Aspirin".',
+        'Loperamide or Imodium (including "loperimide") for diarrhoea means the diarrhoea option; use "Loperamide".',
+        'Cetirizine, Zyrtec or loratadine for allergy or hay fever means the allergy option; use "Cetirizine" or "Loratadine" respectively.',
+        'Xylometazoline or Otrivine for a blocked or runny nose, and dextromethorphan for cough, mean the cold or cough option; use "Xylometazoline" or "Dextromethorphan" respectively.',
+        'Antacid, Gaviscon or Rennie for heartburn or indigestion means the heartburn option; use "Antacid".',
+        'Do not map dimenhydrinate, simethicone, a brand with multiple possible ingredients, or a medicine name with no named reason for use to another symptom option. Do not infer a medicine from a vague sound-alike.',
+      ].join(' ')
+    : null;
+  const durationHint = context.questionId === 'duration'
+    ? 'Duration mapping rule: "today" or "just started" means today. "yesterday", "two days ago", "1 day", "2 days", or "48 hours" means 1_to_2_days. "3 days", "4 days", "5 days", "several days", or "a week" means 3_to_7_days. More than 7 days means more_than_7_days.'
+    : null;
   const user = [
+    `Question id: ${context.questionId}`,
     `Question on screen: ${context.title || context.questionId}`,
+    `Answer type: ${context.type}`,
     describeAllowed(context),
-    `The customer said this (language hint: ${context.language}):`,
+    durationHint,
+    `The customer said this as an answer to that question (language hint: ${context.language}):`,
     `"${context.transcript}"`,
+    symptomMedicineHint,
+    imageNote,
     'Reply with the JSON object now.',
-  ].join('\n\n');
+  ].filter(Boolean).join('\n\n');
   return { system: SYSTEM_PROMPT, user };
 }
 
 export function buildCall(config, context) {
   const messages = buildMessages(context);
   if (config.provider === 'ollama') {
+    const allowedValues = Array.isArray(context.options) && context.options.length > 0
+      ? Array.from(new Set(context.options.map(o => o.value).concat(['unknown', 'emergency'])))
+      : null;
+    const format = allowedValues
+      ? {
+          type: 'object',
+          properties: {
+            value: { type: 'string', enum: allowedValues },
+            confidence: { type: 'number' },
+            detected_language: { type: 'string' },
+            recognized_medicine: { type: 'string' },
+            custom_symptom: { type: 'string' },
+          },
+          required: ['value', 'confidence'],
+        }
+      : {
+          type: 'object',
+          properties: {
+            value: { type: 'string' },
+            confidence: { type: 'number' },
+            detected_language: { type: 'string' },
+          },
+          required: ['value', 'confidence'],
+        };
     return {
       provider: 'ollama',
       url: `${config.baseUrl}/api/chat`,
@@ -198,10 +318,12 @@ export function buildCall(config, context) {
       body: {
         model: config.model,
         stream: false,
-        format: 'json',
-        options: { temperature: 0, top_p: 0, num_predict: 60, seed: 7 },
+        think: false,
+        keep_alive: '30m',
+        format,
+        options: { temperature: 0, top_p: 0, num_predict: 80, num_ctx: 768, seed: 7 },
         messages: [
-          { role: 'system', content: messages.system },
+          { role: 'system', content: LOCAL_SYSTEM_PROMPT },
           { role: 'user', content: messages.user },
         ],
       },
@@ -213,11 +335,24 @@ export function buildCall(config, context) {
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': config.apiKey },
     body: {
       systemInstruction: { parts: [{ text: messages.system }] },
-      contents: [{ role: 'user', parts: [{ text: messages.user }] }],
+      contents: [{
+        role: 'user',
+        parts: context.image?.data
+          ? [
+              { text: messages.user },
+              {
+                inlineData: {
+                  mimeType: context.image.mimeType || 'image/jpeg',
+                  data: context.image.data,
+                },
+              },
+            ]
+          : [{ text: messages.user }],
+      }],
       generationConfig: {
         temperature: 0,
         topP: 0,
-        maxOutputTokens: 64,
+        maxOutputTokens: 256,
         responseMimeType: 'application/json',
       },
     },
@@ -273,8 +408,13 @@ export function validateModelAnswer(modelText, context) {
   if (confidence < context.minConfidence) return reject('low_confidence', confidence);
 
   const answer = normalizeText(parsed.value, LIMITS.answerChars);
-  if (!answer || answer.toLowerCase() === 'unknown' || answer.toLowerCase() === 'none') {
+  const isAllowedNone = Array.isArray(context.options) && context.options.some(o => (o.value || '').toLowerCase() === 'none');
+  if (!answer || answer.toLowerCase() === 'unknown' || (answer.toLowerCase() === 'none' && !isAllowedNone)) {
     return reject('not_answered', confidence);
+  }
+
+  if (answer.toLowerCase() === 'emergency' || parsed.emergency === true) {
+    return { matched: false, emergency: true, value: 'emergency', label: 'Emergency', confidence, reason: 'emergency_triage' };
   }
 
   if (context.type === 'number') {
@@ -301,5 +441,31 @@ export function validateModelAnswer(modelText, context) {
     || context.options.find(candidate => candidate.value.toLowerCase() === wanted.replace(/\s+/g, '_'));
 
   if (!option) return reject('value_not_allowed', confidence);
-  return { matched: true, value: option.value, label: option.label || option.value, confidence, reason: null };
+  const recognizedMedicine = parsed.recognized_medicine ? normalizeText(parsed.recognized_medicine, 60) : null;
+  const followUpQuestion = parsed.follow_up_question ? normalizeText(parsed.follow_up_question, 200) : null;
+  const possibleCategories = Array.isArray(parsed.possible_categories)
+    ? parsed.possible_categories
+        .map(c => normalizeText(c, 40))
+        .filter(c => context.options.some(o => o.value === c))
+    : [];
+  const volunteeredContext = parsed.volunteered_context && typeof parsed.volunteered_context === 'object'
+    ? parsed.volunteered_context
+    : null;
+  const customSymptom = parsed.custom_symptom ? normalizeText(parsed.custom_symptom, 50) : null;
+  const detectedLanguageRaw = normalizeText(parsed.detected_language, 12).toLowerCase().split('-')[0];
+  const detectedLanguage = /^[a-z]{2}$/.test(detectedLanguageRaw) ? detectedLanguageRaw : null;
+
+  return {
+    matched: true,
+    value: option.value,
+    label: option.label || option.value,
+    confidence,
+    reason: null,
+    recognized_medicine: recognizedMedicine,
+    follow_up_question: followUpQuestion,
+    possible_categories: possibleCategories,
+    volunteered_context: volunteeredContext,
+    custom_symptom: customSymptom,
+    detected_language: detectedLanguage,
+  };
 }

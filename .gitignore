@@ -6,9 +6,16 @@ node_modules/
 # Downloaded voices and the local Piper runtime (~100 MB, re-downloadable).
 tools/piper/
 
+# Local speech-to-text runtime, models and archives.
+tools/whisper/
+tools/whisper.cpp/
+tools/whisper-bin-*/
+tools/whisper-bin-*.zip
+
 # Scratch output: screenshots, cached TTS audio, exports.
 tmp/
 outputs/
+output/
 
 # Editor and OS noise.
 .DS_Store

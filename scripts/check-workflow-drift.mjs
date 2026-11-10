@@ -1,3 +1,4 @@
+import { loadEngineSource } from '../n8n/load-engine-source.mjs';
 /**
  * Guards against the failure class that bit twice: the workflow JSON that is
  * imported into n8n drifting from the n8n/src code it is generated from.
@@ -34,7 +35,7 @@ for (const expected of codeNodes) {
     problems.push(`node "${expected.name}" is missing from the built workflow`);
     continue;
   }
-  const source = await readFile(expected.source, 'utf8');
+  const source = await loadEngineSource(expected.source);
   if (node.parameters.jsCode !== source) {
     const embedded = node.parameters.jsCode || '';
     problems.push(
@@ -196,12 +197,12 @@ if (process.argv.includes('--live')) {
       console.log(`Deployed ${deployed.id} "${deployed.name}" active=${deployed.active}, updated ${deployed.updatedAt}`);
       for (const expected of codeNodes) {
         const live = deployedByName.get(expected.name);
-        const source = await readFile(expected.source, 'utf8');
+        const source = await loadEngineSource(expected.source);
         if (!live) {
           problems.push(`deployed workflow has no "${expected.name}" node`);
           continue;
         }
-        const same = (live.parameters.jsCode || '').replace(/\r\n/g, '\n').trim() === source.trim();
+        const same = (live.parameters.jsCode || '').replace(/\r\n/g, '\n').trim() === source.replace(/\r\n/g, '\n').trim();
         console.log(`  ${same ? 'MATCH' : 'DIFFER'}  ${expected.name}`);
         if (!same) problems.push(`the ${expected.name} node deployed in n8n differs from ${expected.source} - re-import or push the built JSON`);
       }

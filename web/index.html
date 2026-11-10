@@ -1,8 +1,8 @@
 <!doctype html>
-<html lang="en">
+<html lang="de">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="theme-color" content="#04100a">
     <title>PILLPAL MedAssist Voice</title>
     <script>
@@ -18,17 +18,19 @@
         }
       })();
     </script>
+    <link rel="icon" type="image/png" href="./pillpal-logo.png">
     <link rel="stylesheet" href="./styles.css">
   </head>
   <body>
     <main class="kiosk-shell">
       <header class="topbar">
-        <div class="brand-mark" aria-hidden="true">+</div>
+        <img class="brand-mark brand-logo" src="./pillpal-logo.png" width="52" height="52" alt="PillPal">
         <div class="brand-copy">
-          <p class="eyebrow" data-i18n="app.eyebrow">Smart medicine vending assistant</p>
+          <p class="eyebrow" data-i18n="app.eyebrow">AI Clinical Voice Agent & Medical Assistant</p>
           <h1>PILLPAL <span>MedAssist</span></h1>
         </div>
         <div class="header-actions">
+          <a class="mode-link" href="./voice.html" aria-label="Open voice-only agent">Voice only</a>
           <div class="status-pill"><span class="status-dot" aria-hidden="true"></span> <span data-i18n="app.researchMode">Research mode</span></div>
           <button id="themeToggle" class="icon-button theme-toggle" type="button" aria-label="Switch to light mode" data-i18n-aria-label="theme.switchToLight">
             <span id="themeIcon" class="theme-icon" aria-hidden="true">☾</span><span id="themeLabel" class="button-label" data-i18n="theme.dark">Dark</span>
@@ -85,9 +87,15 @@
 
           <form id="chatForm" class="chat-composer">
             <button id="repeatQuestionButton" class="composer-icon" type="button" disabled aria-label="Repeat the question" data-i18n-aria-label="chat.repeat">↻</button>
+            <button id="cameraButton" class="composer-icon" type="button" disabled aria-label="Take photo or show medicine" data-i18n-aria-label="chat.camera">📷</button>
+            <input type="file" id="cameraInput" accept="image/*" capture="environment" hidden>
+            <div id="imagePreviewContainer" class="image-preview-container" hidden>
+              <img id="imagePreviewThumb" class="image-preview-thumb" alt="" hidden>
+              <button id="clearImageButton" class="image-preview-clear" type="button" aria-label="Remove photo">✕</button>
+            </div>
             <label class="sr-only" for="chatInput" data-i18n="chat.typeLabel">Type your answer</label>
-            <input id="chatInput" type="text" placeholder="Type your answer…" data-i18n-placeholder="chat.placeholderDefault" autocomplete="off" disabled>
-            <button id="sendChatButton" class="send-button" type="submit" disabled data-i18n="chat.send">Send</button>
+            <input id="chatInput" type="text" placeholder="Type your symptom or question…" data-i18n-placeholder="chat.startToChat" autocomplete="off">
+            <button id="sendChatButton" class="send-button" type="submit" data-i18n="chat.send">Send</button>
           </form>
         </section>
 
@@ -100,15 +108,35 @@
             <label class="language-control">
               <span class="sr-only" data-i18n="language.label">Language</span>
               <select id="languageSelect" class="language-select" aria-label="Language" data-i18n-aria-label="language.label">
+                <option value="auto">AUTO · Deutsch / English</option>
                 <option value="en">EN</option>
                 <option value="de">DE</option>
+                <option value="fr">FR</option>
+                <option value="ar">AR</option>
+                <option value="tr">TR</option>
+                <option value="es">ES</option>
+                <option value="it">IT</option>
+                <option value="pl">PL</option>
+                <option value="ru">RU</option>
+                <option value="uk">UK</option>
+                <option value="ro">RO</option>
+                <option value="nl">NL</option>
+                <option value="pt">PT</option>
+                <option value="fa">FA</option>
+                <option value="ur">UR</option>
+                <option value="hi">HI</option>
+                <option value="te">TE</option>
               </select>
             </label>
           </div>
-          <div id="transcript" class="transcript" role="log" aria-live="polite" aria-relevant="additions">
+          <div id="transcript" class="transcript" role="log" aria-live="polite" aria-relevant="additions" tabindex="0">
             <p class="empty-transcript" data-i18n="transcript.empty">The conversation will appear here after you start.</p>
+            <div id="transcriptActivity" class="transcript-activity" role="status" hidden>
+              <span class="activity-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span id="transcriptActivityText"></span>
+            </div>
           </div>
-          <p id="interimTranscript" class="interim-transcript" hidden></p>
+          <p id="interimTranscript" class="interim-transcript" hidden aria-hidden="true"></p>
         </aside>
       </section>
 

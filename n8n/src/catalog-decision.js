@@ -7,6 +7,7 @@ const intake = $('Intake and Safety Engine').first().json;
 const items = typeof $input.all === 'function' ? $input.all() : [$input.first()];
 const firstJson = items[0]?.json || {};
 const state = intake.state || {};
+/* @shared-safety-policy */
 
 let rows = [];
 let catalogError = null;
@@ -50,7 +51,7 @@ function termsFromRules(value) {
 function conflicts(patientTerms, ruleTerms) {
   const patient = (Array.isArray(patientTerms) ? patientTerms : []).map(normalize).filter(Boolean);
   const rules = termsFromRules(ruleTerms);
-  return patient.some(p => rules.some(r => p.includes(r) || r.includes(p)));
+  return medicineTermsConflict(patient, rules);
 }
 
 function timing() {
@@ -89,7 +90,6 @@ if (catalogError) {
   );
 }
 
-const stateLanguage = String(state.language_code || '').split('-')[0];
 
 // Every OTC monograph limits how long a symptom may be self-treated before it
 // needs assessment. maximum_duration_days was already travelling all the way to
@@ -97,12 +97,21 @@ const stateLanguage = String(state.language_code || '').split('-')[0];
 // 3-day antipyretic. Upper bound of each reported band is used, so the check is
 // conservative in the customer's favour.
 const DURATION_DAYS = { today: 1, '1_to_2_days': 2, '3_to_7_days': 7, more_than_7_days: 8 };
-const reportedDays = DURATION_DAYS[state.duration_code] ?? 0;
+const reportedDays = DURATION_DAYS[state.duration_code];
+
+if (!Number.isInteger(state.age_years) || state.age_years < 0 || !reportedDays
+    || !['mild', 'moderate'].includes(state.severity) || state.warning_signs !== false
+    || !['no', 'not_applicable'].includes(state.pregnancy_breastfeeding)
+    || !['allergy_status', 'medication_status', 'condition_status'].every(key => ['yes', 'no'].includes(state[key]))
+    || !['allergy', 'medication', 'condition'].every(key => Array.isArray(state[`${key}_terms`])
+      && (state[`${key}_status`] !== 'yes' || state[`${key}_terms`].length > 0))
+    || state.confirmed !== true) {
+  return noProduct('The safety assessment is incomplete. Please restart the assessment or ask a pharmacist.', ['incomplete_safety_assessment']);
+}
 
 const filteredRows = rows.filter(r =>
-  (!r.pathway_code || r.pathway_code === state.pathway_code) &&
-  (!r.country_code || r.country_code === state.country_code) &&
-  (!r.language_code || !stateLanguage || r.language_code === stateLanguage)
+  r.pathway_code === state.pathway_code &&
+  r.country_code === state.country_code
 );
 
 if (!filteredRows.length) {
@@ -115,14 +124,17 @@ if (!filteredRows.length) {
 const evaluated = filteredRows
   .sort((a, b) => Number(a.display_priority || 100) - Number(b.display_priority || 100))
   .map(product => {
-    const reasons = [];
+    const reasons = productApprovalReasons(product, state.country_code);
     const ageMonths = Number(state.age_years) * 12;
-    if (product.minimum_age_months != null && ageMonths < Number(product.minimum_age_months)) reasons.push('below_minimum_age');
+    if (state.age_years < 18 || (product.minimum_age_months != null && ageMonths < Number(product.minimum_age_months))) reasons.push('below_minimum_age');
     if (product.maximum_age_years != null && Number(state.age_years) > Number(product.maximum_age_years)) reasons.push('above_maximum_age');
     if (product.maximum_duration_days != null && reportedDays > Number(product.maximum_duration_days)) reasons.push('symptom_longer_than_product_allows');
     if (conflicts(state.allergy_terms, product.allergy_terms)) reasons.push('allergy_conflict');
     if (conflicts(state.condition_terms, product.contraindications)) reasons.push('contraindication_conflict');
     if (conflicts(state.medication_terms, product.interaction_rules)) reasons.push('medicine_interaction_conflict');
+    const ingredients = (product.active_ingredients || []).map(ingredient => ingredient.name).filter(Boolean);
+    if (medicineTermsConflict(state.allergy_terms, ingredients)) reasons.push('allergy_conflict');
+    if (medicineTermsConflict(state.medication_terms, ingredients)) reasons.push('duplicate_active_ingredient');
     if (!product.dose_instructions || typeof product.dose_instructions !== 'object' || !Object.keys(product.dose_instructions).length) reasons.push('missing_approved_dose');
     return { product, reasons };
   });
@@ -159,7 +171,7 @@ return [{
     ...intake,
     needs_catalog: false,
     outcome: 'PRODUCT_ELIGIBLE',
-    message: 'An approved product matched the completed safety assessment. Review the product information before continuing.',
+    message: 'Based on the completed safety assessment, an approved product is suitable. Review how to take it and all precautions before continuing.',
     reason_codes: ['approved_product_match'],
     dispense_authorized: false,
     product: {
@@ -173,7 +185,14 @@ return [{
       route: product.route,
       pack_size: product.pack_size,
       instructions: product.dose_instructions,
+      allowed_indications: product.allowed_indications,
+      minimum_age_months: product.minimum_age_months,
+      maximum_age_years: product.maximum_age_years,
       warnings: product.warnings,
+      contraindications: product.contraindications,
+      allergy_terms: product.allergy_terms,
+      interaction_rules: product.interaction_rules,
+      referral_triggers: product.referral_triggers,
       maximum_duration_days: product.maximum_duration_days,
       label_url: product.label_url,
       label_version: product.label_version,

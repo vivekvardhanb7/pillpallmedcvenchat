@@ -31,7 +31,16 @@ const body = $json.body || $json;
 const result = sanitizeRequest(body, config);
 if (!result.ok) return [{ json: { ok: false, error: result.error } }];
 const messages = buildMessages(result.context);
-return [{ json: { ok: true, system: messages.system, user: messages.user, context: result.context } }];
+const parts = [{ text: messages.user }];
+if (result.context.image?.data) {
+  parts.push({
+    inlineData: {
+      mimeType: result.context.image.mimeType || 'image/jpeg',
+      data: result.context.image.data,
+    },
+  });
+}
+return [{ json: { ok: true, system: messages.system, user: messages.user, parts, context: result.context } }];
 `;
 }
 
@@ -49,6 +58,12 @@ return [{
     label: verdict.label ?? null,
     confidence: verdict.confidence ?? 0,
     reason: verdict.reason || null,
+    emergency: verdict.emergency || false,
+    recognized_medicine: verdict.recognized_medicine || null,
+    follow_up_question: verdict.follow_up_question || null,
+    possible_categories: verdict.possible_categories || [],
+    volunteered_context: verdict.volunteered_context || null,
+    detected_language: verdict.detected_language || null,
     provider: 'gemini-n8n',
   },
 }];
@@ -182,7 +197,7 @@ export function buildUnderstandWorkflow(options) {
           nodeCredentialType: 'googlePalmApi',
           sendBody: true,
           specifyBody: 'json',
-          jsonBody: '={{ JSON.stringify({ systemInstruction: { parts: [{ text: $json.system }] }, contents: [{ role: "user", parts: [{ text: $json.user }] }], generationConfig: { temperature: 0, topP: 0, maxOutputTokens: 64, responseMimeType: "application/json" } }) }}',
+          jsonBody: '={{ JSON.stringify({ systemInstruction: { parts: [{ text: $json.system }] }, contents: [{ role: "user", parts: $json.parts || [{ text: $json.user }] }], generationConfig: { temperature: 0, topP: 0, maxOutputTokens: 96, responseMimeType: "application/json" } }) }}',
           options: { timeout: Number(timeoutMs) || 12000 },
         },
         id: randomUUID(),

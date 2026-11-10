@@ -36,6 +36,13 @@ function cleanList(value, limit = 12) {
   return [...new Set(list.map(v => cleanText(v, 90)).filter(Boolean))].slice(0, limit);
 }
 
+function uncertainHistoryAnswer(value) {
+  const text = normalize(Array.isArray(value) ? value.join(' ') : value)
+    .replace(/ß/g, 'ss').replace(/[’']/g, '');
+  return /\b(not sure|unsure|dont know|do not know|unknown|cannot remember|cant remember|nicht sicher|unsicher|weiss(?: ich)? nicht|kenne(?: ich)? nicht)\b/.test(text)
+    || /\b(?:kenne|weiss)(?:\s+\w+){0,4}\s+nicht\b/.test(text);
+}
+
 function sessionKey(value) {
   const candidate = cleanText(value, 80);
   if (/^[A-Za-z0-9_-]{8,80}$/.test(candidate)) return candidate;
@@ -62,6 +69,16 @@ const PATHWAY_CODES = new Set(PATHWAYS.map(p => p.value));
 // pathway, and never because a product row was flipped to enabled.
 const SUPPORTED_PATHWAYS = new Set(['pain_fever']);
 
+// The reserved demo country exercises every declared pathway against synthetic
+// products, so a demonstration can show the whole flow. A real country never
+// gets this: its scope stays exactly what has been signed off.
+const DEMO_COUNTRY_CODE = 'ZZ';
+const DEMO_PATHWAYS = new Set(PATHWAYS.map(p => p.value).filter(code => code !== 'other'));
+
+function pathwaysInScopeFor(countryCode) {
+  return countryCode === DEMO_COUNTRY_CODE ? DEMO_PATHWAYS : SUPPORTED_PATHWAYS;
+}
+
 const GENERIC_RED_FLAGS = [
   'trouble breathing, chest pressure, fainting, confusion, significant bleeding, a sudden extreme symptom, or being unable to keep fluids down',
 ];
@@ -85,6 +102,7 @@ const DURATION_CODES = new Set(['today', '1_to_2_days', '3_to_7_days', 'more_tha
 const SEVERITY_CODES = new Set(['mild', 'moderate', 'severe']);
 const PREGNANCY_CODES = new Set(['pregnant', 'breastfeeding', 'both', 'no', 'not_applicable', 'prefer_not_to_say']);
 const YES_NO_UNSURE = new Set(['yes', 'no', 'not_sure']);
+const BACKGROUND_CODES = new Set(['none', 'pregnancy', 'history', 'both', 'not_sure']);
 
 function newState(countryCode, languageCode) {
   return {
@@ -99,6 +117,7 @@ function newState(countryCode, languageCode) {
     warning_signs: null,
     warning_signs_answer: null,
     pregnancy_breastfeeding: null,
+    safety_background_status: null,
     allergy_status: null,
     allergy_terms: [],
     medication_status: null,
@@ -123,6 +142,7 @@ function sanitizeState(raw, countryCode, languageCode) {
   if (typeof raw.warning_signs === 'boolean') state.warning_signs = raw.warning_signs;
   if (YES_NO_UNSURE.has(raw.warning_signs_answer)) state.warning_signs_answer = raw.warning_signs_answer;
   if (PREGNANCY_CODES.has(raw.pregnancy_breastfeeding)) state.pregnancy_breastfeeding = raw.pregnancy_breastfeeding;
+  if (BACKGROUND_CODES.has(raw.safety_background_status)) state.safety_background_status = raw.safety_background_status;
   if (YES_NO_UNSURE.has(raw.allergy_status)) state.allergy_status = raw.allergy_status;
   if (YES_NO_UNSURE.has(raw.medication_status)) state.medication_status = raw.medication_status;
   if (YES_NO_UNSURE.has(raw.condition_status)) state.condition_status = raw.condition_status;
@@ -138,7 +158,7 @@ function sanitizeState(raw, countryCode, languageCode) {
 
   const allowedSteps = new Set([
     'symptom', 'age', 'duration', 'severity', 'warning_signs',
-    'pregnancy_breastfeeding', 'allergy_status', 'allergy_terms',
+    'safety_background_status', 'pregnancy_breastfeeding', 'medical_history_status', 'allergy_status', 'allergy_terms',
     'medication_status', 'medication_terms', 'condition_status',
     'condition_terms', 'confirm', 'complete',
   ]);
@@ -213,7 +233,7 @@ function screenFor(step, error = null, pathwayCode = null) {
       return {
         ...common,
         type: 'single_select',
-        title: 'Are you pregnant or breastfeeding?',
+        title: 'Could pregnancy or breastfeeding apply to you?',
         options: [
           option('pregnant', 'Pregnant'),
           option('breastfeeding', 'Breastfeeding'),
@@ -222,6 +242,28 @@ function screenFor(step, error = null, pathwayCode = null) {
           option('not_applicable', 'Not applicable'),
           option('prefer_not_to_say', 'Prefer not to say'),
         ],
+      };
+    case 'safety_background_status':
+      return {
+        ...common,
+        type: 'single_select',
+        title: 'Do any of these apply to you: pregnancy or breastfeeding, a medicine allergy, current medicines, or an ongoing medical condition?',
+        subtitle: 'Choose none only if none of these apply. Include prescription and non-prescription medicines.',
+        options: [
+          option('none', 'No, none of these'),
+          option('pregnancy', 'Pregnancy or breastfeeding'),
+          option('history', 'Allergy, medicines, or medical condition'),
+          option('both', 'Both groups apply'),
+          option('not_sure', 'I am not sure'),
+        ],
+      };
+    case 'medical_history_status':
+      return {
+        ...common,
+        type: 'single_select',
+        title: 'Do you have a medicine allergy, take any medicines, or have an ongoing medical condition?',
+        subtitle: 'Choose no only if none of these apply. Include prescription and non-prescription medicines.',
+        options: [option('no', 'No, none of these'), option('yes', 'Yes, one or more'), option('not_sure', 'I am not sure')],
       };
     case 'allergy_status':
       return {
@@ -382,7 +424,7 @@ function evaluateBeforeCatalog(sessionId, state) {
   }
   // Re-checked here as well, because a client that forges a later step must not
   // be able to reach the catalogue with a pathway this machine never assessed.
-  if (!SUPPORTED_PATHWAYS.has(state.pathway_code)) {
+  if (!pathwaysInScopeFor(state.country_code).has(state.pathway_code)) {
     return finalResponse(
       sessionId,
       state,
@@ -457,8 +499,8 @@ function evaluateBeforeCatalog(sessionId, state) {
 }
 
 const payload = parsePayload(rawItem);
-const countryCode = /^[A-Z]{2}$/.test(payload.country_code) ? payload.country_code : 'MA';
-const languageCode = /^[a-z]{2}(?:-[A-Z]{2})?$/.test(payload.language_code) ? payload.language_code : 'en';
+const countryCode = /^[A-Z]{2}$/.test(payload.country_code) ? payload.country_code : 'DE';
+const languageCode = /^[a-z]{2}(?:-[A-Z]{2})?$/.test(payload.language_code) ? payload.language_code : 'de';
 const id = sessionKey(payload.session_id);
 const reset = payload.reset === true || payload.answer?.value === 'restart';
 const state = reset ? newState(countryCode, languageCode) : sanitizeState(payload.state, countryCode, languageCode);
@@ -492,7 +534,7 @@ switch (state.step) {
         ['unsupported_pathway'],
       );
     }
-    if (!SUPPORTED_PATHWAYS.has(selected)) {
+    if (!pathwaysInScopeFor(countryCode).has(selected)) {
       return finalResponse(
         id,
         state,
@@ -567,7 +609,42 @@ switch (state.step) {
       );
     }
     state.warning_signs = false;
-    state.step = 'pregnancy_breastfeeding';
+    state.step = 'safety_background_status';
+    return questionResponse(id, state);
+  }
+  case 'safety_background_status': {
+    const selected = cleanText(value, 30);
+    if (!BACKGROUND_CODES.has(selected)) return questionResponse(id, state, 'Please choose one of the available options.');
+    state.safety_background_status = selected;
+    if (selected === 'pregnancy' || selected === 'both') {
+      state.pregnancy_breastfeeding = 'prefer_not_to_say';
+      return finalResponse(
+        id,
+        state,
+        'CLINIC_REFERRAL',
+        'This machine cannot automatically recommend a medicine during pregnancy or breastfeeding. Please visit a nearby clinic, doctor or pharmacy for advice.',
+        ['pregnancy_breastfeeding_or_uncertain'],
+      );
+    }
+    if (selected === 'not_sure') {
+      state.pregnancy_breastfeeding = 'prefer_not_to_say';
+      return finalResponse(
+        id,
+        state,
+        'CLINIC_REFERRAL',
+        'More certain pregnancy, breastfeeding, allergy, medicine and health-condition information is required. Please visit a nearby clinic, doctor or pharmacy for advice.',
+        ['pregnancy_breastfeeding_or_uncertain', 'medical_history_uncertain'],
+      );
+    }
+    state.pregnancy_breastfeeding = 'not_applicable';
+    if (selected === 'none') {
+      state.allergy_status = 'no';
+      state.medication_status = 'no';
+      state.condition_status = 'no';
+      nextAfterHistory(state);
+      return questionResponse(id, state);
+    }
+    state.step = 'allergy_status';
     return questionResponse(id, state);
   }
   case 'pregnancy_breastfeeding': {
@@ -583,6 +660,20 @@ switch (state.step) {
         ['pregnancy_breastfeeding_or_uncertain'],
       );
     }
+    state.step = 'medical_history_status';
+    return questionResponse(id, state);
+  }
+  case 'medical_history_status': {
+    const selected = cleanText(value, 20);
+    if (!YES_NO_UNSURE.has(selected)) return questionResponse(id, state, 'Please choose yes, no or not sure.');
+    if (selected === 'not_sure') return referralUncertainHistory(id, state);
+    if (selected === 'no') {
+      state.allergy_status = 'no';
+      state.medication_status = 'no';
+      state.condition_status = 'no';
+      nextAfterHistory(state);
+      return questionResponse(id, state);
+    }
     state.step = 'allergy_status';
     return questionResponse(id, state);
   }
@@ -595,6 +686,10 @@ switch (state.step) {
     return questionResponse(id, state);
   }
   case 'allergy_terms': {
+    if (uncertainHistoryAnswer(value)) {
+      state.allergy_status = 'not_sure';
+      return referralUncertainHistory(id, state);
+    }
     const terms = cleanList(value);
     if (!terms.length) return questionResponse(id, state, 'Enter at least one medicine or ingredient allergy.');
     state.allergy_terms = terms;
@@ -610,6 +705,10 @@ switch (state.step) {
     return questionResponse(id, state);
   }
   case 'medication_terms': {
+    if (uncertainHistoryAnswer(value)) {
+      state.medication_status = 'not_sure';
+      return referralUncertainHistory(id, state);
+    }
     const terms = cleanList(value);
     if (!terms.length) return questionResponse(id, state, 'Enter at least one current medicine.');
     state.medication_terms = terms;
@@ -626,6 +725,10 @@ switch (state.step) {
     return questionResponse(id, state);
   }
   case 'condition_terms': {
+    if (uncertainHistoryAnswer(value)) {
+      state.condition_status = 'not_sure';
+      return referralUncertainHistory(id, state);
+    }
     const terms = cleanList(value);
     if (!terms.length) return questionResponse(id, state, 'Enter at least one medical condition.');
     state.condition_terms = terms;

@@ -1,3 +1,4 @@
+import { loadEngineSource } from './load-engine-source.mjs';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
@@ -12,7 +13,7 @@ try {
 }
 
 const intakeCode = await readFile(resolve(here, 'src/intake-and-safety-engine.js'), 'utf8');
-const catalogCode = await readFile(resolve(here, 'src/catalog-decision.js'), 'utf8');
+const catalogCode = await loadEngineSource(resolve(here, 'src/catalog-decision.js'));
 const outcomeCode = await readFile(resolve(here, 'src/outcome-log-payload.js'), 'utf8');
 
 // The outcome row is posted straight to PostgREST. The Supabase node's insert
