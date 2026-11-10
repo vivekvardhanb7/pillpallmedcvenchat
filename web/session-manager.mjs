@@ -22,9 +22,16 @@ export function createSessionManager(processTurn, { country = 'DE', ttlMs = 1200
     const id = fresh ? randomUUID() : body.session_id;
     busy.add(id);
     try {
-      const result = await processTurn({ session_id: id, country_code: country,
+      const result = await processTurn({
+        session_id: id,
+        country_code: country,
         language_code: /^[a-z]{2}(?:-[A-Z]{2})?$/.test(body.language_code) ? body.language_code : 'de',
-        reset: fresh, state: fresh ? null : structuredClone(previous.result.state), answer: fresh ? null : body.answer });
+        reset: fresh,
+        mode: body.mode,
+        query: body.query || body.answer?.text || (typeof body.answer?.value === 'string' ? body.answer.value : undefined),
+        state: fresh ? null : structuredClone(previous.result.state),
+        answer: fresh ? null : body.answer,
+      });
       result.revision = fresh ? 0 : previous.result.revision + 1;
       sessions.set(id, { result: structuredClone(result), expires: time + ttlMs });
       if (reset && body.session_id !== id) sessions.delete(body.session_id);

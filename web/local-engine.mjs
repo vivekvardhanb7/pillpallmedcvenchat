@@ -57,8 +57,8 @@ export async function processRagTurn(body) {
   const lang = /^[a-z]{2}/.test(body.language_code) ? body.language_code.slice(0, 2) : 'de';
   const query = String(body.query || body.answer?.value || body.answer?.text || '').trim();
 
-  // If reset or empty query or restart, return direct consultation screen
-  if (body.reset || !query || query === 'restart') {
+  // If explicitly resetting without a query, or query is empty/restart, return direct consultation screen
+  if (!query || query === 'restart' || (body.reset && !body.query && !body.answer?.text && !body.answer?.value)) {
     return {
       session_id: body.session_id,
       revision: 0,
