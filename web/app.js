@@ -369,7 +369,7 @@ async function sayAssistant(text, key, options = {}) {
   appendTranscript('assistant', spoken, key);
   voice.setLanguage(activeLanguage());
   return voice.speak(spoken, {
-    allowBargeIn: started && !handsFreeBlocked && !current?.state?.completed,
+    allowBargeIn: started && !handsFreeBlocked && !isCompleted(),
     ...options,
   });
 }
@@ -1991,6 +1991,16 @@ async function handleNaturalLanguageAnswer(text, source, image = null) {
   }
   if (!current?.screen || busy) return;
   if (current.state?.completed) {
+    if (current?.mode === 'rag_direct') {
+      const normalized = normalizeIntentText(text);
+      const isProductChat = /\\b(how|dose|dosage|take|tablet|tablets|often|many|repeat|directions|instructions|food|eat|meal|stomach|milk|drink|empty stomach|drive|driving|sleepy|drowsy|drowsiness|alert|operate machinery|not better|persist|worse|fever continues|still hurt|doesn't go away|does not go away|warning|precaution|allergy|allergic|medicine|medication|safe|interaction|side effect|thank|thanks|bye|goodbye)\\b/.test(normalized);
+      if (isProductChat && current.product) {
+        handleProductConversation(text);
+        return;
+      }
+      callWorkflow({ answer: { question_id: 'rag_consultation', value: text, text } });
+      return;
+    }
     if (current.product) handleProductConversation(text);
     return;
   }

@@ -167,15 +167,25 @@ export async function processRagTurn(body) {
     text: p.text,
   }));
 
+  const isIbu = targetSku.includes('BRUFEN') || targetSku.includes('IBU');
   const doseInstructions = {
-    per_dose: product.safety?.max_single_dose || (lang === 'de' ? '1 Tablette (500 mg)' : '1 tablet (500 mg)'),
-    min_interval_hours: product.safety?.min_dose_interval_hours || 4,
-    max_doses_per_24h: 4,
-    display_text: product.safety?.dose_instructions || (lang === 'de' ? '1 Tablette im Abstand von mindestens 4 bis 6 Stunden, maximal 4 Tabletten pro Tag.' : '1 tablet every 4 to 6 hours, maximum 4 tablets per 24 hours.'),
+    per_dose: lang === 'de'
+      ? (isIbu ? '400 mg (1 Filmtablette)' : '500 mg (1 Tablette)')
+      : (product.safety?.max_single_dose || (isIbu ? '400 mg (1 tablet)' : '500 mg (1 tablet)')),
+    min_interval_hours: product.safety?.min_dose_interval_hours || (isIbu ? 6 : 4),
+    max_doses_per_24h: isIbu ? 3 : 4,
+    display_text: lang === 'de'
+      ? (isIbu
+          ? '1 Filmtablette (400 mg) mit einem Glas Wasser einnehmen. Bei Bedarf alle 6 bis 8 Stunden. Maximal 3 Tabletten (1200 mg) pro 24 Stunden nicht überschreiten.'
+          : '1 Tablette (500 mg) mit einem Glas Wasser einnehmen. Bei Bedarf alle 4 bis 6 Stunden wiederholen. Maximal 4 Tabletten (2000 mg) pro 24 Stunden nicht überschreiten.')
+      : (product.safety?.dose_instructions || (isIbu
+          ? 'Take 1 tablet (400 mg) with food or water every 6 to 8 hours as needed. Do not exceed 3 tablets (1200 mg) in 24 hours.'
+          : 'Take 1 tablet (500 mg) with water every 4 to 6 hours as needed. Do not exceed 4 tablets (2000 mg) in 24 hours.')),
   };
 
   const productData = {
     ...product,
+    id: product.id || product.sku,
     name: product.product_name || product.brand_name || 'Paracetamol 500 mg',
     brand_name: product.brand_name || product.product_name,
     strength: product.strength_label || product.strength || '500 mg',
@@ -202,6 +212,16 @@ export async function processRagTurn(body) {
     product: productData,
     vending_slot: vendingSlot,
     citations,
+    state: {
+      completed: true,
+      step: 'review',
+      answers: {
+        symptom: 'pain_fever',
+        age: 30,
+        duration: '1_to_2_days',
+        severity: 'mild',
+      },
+    },
     screen: {
       question_id: 'complete',
       type: 'product_result',
