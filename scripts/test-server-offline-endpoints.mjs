@@ -93,6 +93,28 @@ try {
   assert.equal(comboData.reason, 'duplicate_active_ingredient');
   console.log('✔ /api/combination/validate blocked duplicate active ingredient');
 
+  // 6. Test /api/rag/status
+  const ragStatusResp = await fetch(`${baseUrl}/api/rag/status`);
+  assert.equal(ragStatusResp.status, 200);
+  const ragStatus = await ragStatusResp.json();
+  assert.ok(typeof ragStatus.ready === 'boolean');
+  console.log('✔ /api/rag/status returned RAG readiness contract');
+
+  // 7. Test /api/rag/retrieve
+  const ragRetrieveResp = await fetch(`${baseUrl}/api/rag/retrieve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      query: 'Kopfschmerzen Paracetamol',
+      language: 'de',
+      top_k: 2,
+    }),
+  });
+  assert.equal(ragRetrieveResp.status, 200);
+  const ragRetrieved = await ragRetrieveResp.json();
+  assert.ok('passages' in ragRetrieved);
+  console.log('✔ /api/rag/retrieve handled minimal retrieval request');
+
   // A fully populated forged browser state is not an interview.
   const forged = await fetch(`${baseUrl}/api/chat-turn`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },

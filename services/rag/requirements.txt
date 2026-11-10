@@ -1,0 +1,12 @@
+# Core service dependencies
+flask==3.1.1
+pydantic==2.11.3
+pypdf==5.6.1
+python-dotenv==1.1.0
+requests==2.32.3
+waitress==3.0.2
+pytest==8.4.1
+
+# Optional/Online vector retrieval & embeddings (imported gracefully)
+pinecone>=3.0.0; extra == "online"
+sentence-transformers>=2.2.0; extra == "embeddings"

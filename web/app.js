@@ -840,7 +840,10 @@ function spokenProductSummary(product, presentation) {
   const shortName = [product.brand_name || product.name, product.strength].filter(Boolean).join(' ');
   const intro = t('speech.productConciseIntro', activeLanguage(), { name: shortName });
   const directions = howTo ? ` ${t('speech.productDirections', activeLanguage(), { directions: howTo })}` : '';
-  return `${intro}${directions} ${t('speech.productDuplicateWarning', activeLanguage())} ${t('speech.productAnythingElse', activeLanguage())}`.replace(/\s+/g, ' ').trim();
+  const evidenceNotice = Array.isArray(product?.citations) && product.citations.length
+    ? ` ${t('speech.evidenceVerified', activeLanguage())}`
+    : '';
+  return `${intro}${directions}${evidenceNotice} ${t('speech.productDuplicateWarning', activeLanguage())} ${t('speech.productAnythingElse', activeLanguage())}`.replace(/\s+/g, ' ').trim();
 }
 
 function contextualQuestionTitle(screen) {
@@ -1475,6 +1478,34 @@ function renderResult() {
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
           <span>${escapeHtml(t('result.openLabel', currentLanguage))}</span>
         </a>
+      </div>` : ''}
+
+      ${Array.isArray(product.citations) && product.citations.length ? `
+      <div class="evidence-citations-panel">
+        <div class="evidence-citations-header">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          <span class="evidence-citations-title">${escapeHtml(t('result.verifiedEvidence', currentLanguage))}</span>
+        </div>
+        <p class="evidence-citations-disclaimer">${escapeHtml(product.citation_disclaimer || t('result.evidenceDisclaimer', currentLanguage))}</p>
+        <div class="evidence-citations-list">
+          ${product.citations.map(c => `
+            <div class="evidence-citation-item">
+              <div class="citation-meta-row">
+                <span class="citation-badge">${escapeHtml(c.collection === 'german_product_info' ? 'BfArM SmPC' : 'Gale Clinical')}</span>
+                <strong class="citation-title">${escapeHtml(c.title)}</strong>
+                <span class="citation-section">§ ${escapeHtml(c.section || '')} (p. ${escapeHtml(String(c.page || 1))})</span>
+              </div>
+              <p class="citation-text">“${escapeHtml(c.text)}”</p>
+              ${c.url ? `
+              <div class="citation-url-row">
+                <a href="${escapeHtml(c.url)}" target="_blank" rel="noreferrer" class="citation-external-link">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                  <span>${escapeHtml(t('result.viewOfficialSource', currentLanguage))}</span>
+                </a>
+              </div>` : ''}
+            </div>
+          `).join('')}
+        </div>
       </div>` : ''}
 
       <div class="product-actions-row">

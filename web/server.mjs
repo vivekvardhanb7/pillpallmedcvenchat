@@ -21,6 +21,10 @@ import {
   validateCombination,
   catalogReadiness,
 } from './local-engine.mjs';
+import {
+  retrieveEvidence,
+  checkRagReadiness,
+} from './rag-client.mjs';
 
 const webRoot = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const projectRoot = resolve(webRoot, '..');
@@ -869,6 +873,35 @@ async function handleChatTurnRequest(request, response) {
   try {
     const body = await readJsonBody(request, 64 * 1024);
     const { status, result } = await handleSessionTurn(body);
+
+    if (result?.outcome === 'PRODUCT_ELIGIBLE' && result?.product?.sku) {
+      try {
+        const lang = /^[a-z]{2}/.test(body.language_code) ? body.language_code.slice(0, 2) : 'de';
+        const ragRes = await retrieveEvidence({
+          query: `${result.product.name} ${result.product.active_ingredients?.map(a => a.name || a).join(' ') || ''} Indikation Dosierung`,
+          language: lang,
+          productIds: [result.product.sku, result.product.id].filter(Boolean),
+          collection: lang === 'de' ? 'german_product_info' : 'gale_encyclopedia',
+          topK: 2,
+        });
+        if (ragRes?.available && Array.isArray(ragRes.passages) && ragRes.passages.length) {
+          result.product.citations = ragRes.passages.map(p => ({
+            id: p.evidence_id,
+            title: p.metadata.title,
+            section: p.metadata.section,
+            page: p.metadata.page,
+            date: p.metadata.source_date,
+            collection: p.metadata.collection,
+            url: p.metadata.source_url || null,
+            text: p.text,
+          }));
+          result.product.citation_disclaimer = ragRes.disclaimer;
+        }
+      } catch (_) {
+        // Fail-safe: Missing citations never block the eligible recommendation
+      }
+    }
+
     return sendJson(response, status, result);
   } catch (error) {
     return sendJson(response, 400, {
@@ -933,16 +966,19 @@ async function handleSyncStatus(response) {
     } catch (_) {}
   }
   const catalogue = await catalogReadiness(deploymentCountry);
+  const rag = await checkRagReadiness();
   return sendJson(response, 200, {
     deployment_country: deploymentCountry,
     offline_ready: true,
     medicine_recommendations_ready: catalogue.trusted && catalogue.approved_product_count > 0,
     catalogue,
+    rag,
     pending_sync_count: pendingCount,
     models: {
       whisper: whisperStatus().available,
       piper: ttsStatus().available,
       catalog: catalogue.available,
+      rag: rag.ready,
     },
     local_catalog_jurisdictions: catalogue.jurisdictions,
     timestamp: new Date().toISOString(),
@@ -1047,6 +1083,26 @@ createServer(async (request, response) => {
 
     if (url.pathname === '/api/combination/validate') {
       if (request.method === 'POST') return await handleCombinationValidateRequest(request, response);
+      response.writeHead(405, { Allow: 'POST' });
+      return response.end();
+    }
+
+    if (url.pathname === '/api/rag/status') {
+      if (request.method === 'GET') return sendJson(response, 200, await checkRagReadiness());
+      response.writeHead(405, { Allow: 'GET' });
+      return response.end();
+    }
+
+    if (url.pathname === '/api/rag/retrieve') {
+      if (request.method === 'POST') {
+        try {
+          const body = await readJsonBody(request, 16 * 1024);
+          const ragResult = await retrieveEvidence(body);
+          return sendJson(response, 200, ragResult);
+        } catch (err) {
+          return sendJson(response, 400, { error: err?.message || 'Invalid RAG retrieve body' });
+        }
+      }
       response.writeHead(405, { Allow: 'POST' });
       return response.end();
     }
